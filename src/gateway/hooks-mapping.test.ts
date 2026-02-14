@@ -13,7 +13,7 @@ describe("hooks mapping", () => {
     expect(mappings[0]?.matchPath).toBe("gmail");
   });
 
-  it("renders template from payload", async () => {
+  it("renders template from payload with external-content markers", async () => {
     const mappings = resolveHookMappings({
       mappings: [
         {
@@ -21,6 +21,33 @@ describe("hooks mapping", () => {
           match: { path: "gmail" },
           action: "agent",
           messageTemplate: "Subject: {{messages[0].subject}}",
+        },
+      ],
+    });
+    const result = await applyHookMappings(mappings, {
+      payload: { messages: [{ subject: "Hello" }] },
+      headers: {},
+      url: baseUrl,
+      path: "gmail",
+    });
+    expect(result?.ok).toBe(true);
+    if (result?.ok) {
+      expect(result.action.kind).toBe("agent");
+      expect(result.action.message).toBe(
+        "Subject: <external-content>Hello</external-content>",
+      );
+    }
+  });
+
+  it("skips wrapping when allowUnsafeExternalContent is true", async () => {
+    const mappings = resolveHookMappings({
+      mappings: [
+        {
+          id: "raw",
+          match: { path: "gmail" },
+          action: "agent",
+          messageTemplate: "Subject: {{messages[0].subject}}",
+          allowUnsafeExternalContent: true,
         },
       ],
     });
@@ -148,7 +175,9 @@ describe("hooks mapping", () => {
     expect(result?.ok).toBe(true);
     if (result?.ok) {
       expect(result.action.kind).toBe("agent");
-      expect(result.action.message).toBe("Override subject: Hello");
+      expect(result.action.message).toBe(
+        "Override subject: <external-content>Hello</external-content>",
+      );
     }
   });
 

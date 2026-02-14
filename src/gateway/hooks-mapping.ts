@@ -187,7 +187,7 @@ function normalizeHookMapping(
   const wakeMode = mapping.wakeMode ?? "now";
   const transform = mapping.transform
     ? {
-        modulePath: resolvePath(transformsDir, mapping.transform.module),
+        modulePath: resolveModulePath(transformsDir, mapping.transform.module),
         exportName: mapping.transform.export?.trim() || undefined,
       }
     : undefined;
@@ -233,8 +233,14 @@ function buildActionFromMapping(
   mapping: HookMappingResolved,
   ctx: HookMappingContext,
 ): HookMappingResult {
+  // Agent-facing templates (message/text) get external-content markers by
+  // default so the LLM can distinguish external data from instructions.
+  // Metadata fields (sessionKey, name, model, etc.) are never wrapped.
+  const contentOpts: RenderTemplateOpts = {
+    wrapExternalContent: !mapping.allowUnsafeExternalContent,
+  };
   if (mapping.action === "wake") {
-    const text = renderTemplate(mapping.textTemplate ?? "", ctx);
+    const text = renderTemplate(mapping.textTemplate ?? "", ctx, contentOpts);
     return {
       ok: true,
       action: {
@@ -244,7 +250,7 @@ function buildActionFromMapping(
       },
     };
   }
-  const message = renderTemplate(mapping.messageTemplate ?? "", ctx);
+  const message = renderTemplate(mapping.messageTemplate ?? "", ctx, contentOpts);
   return {
     ok: true,
     action: {
@@ -348,6 +354,29 @@ function resolvePath(baseDir: string, target: string): string {
   return path.join(baseDir, target);
 }
 
+/**
+ * Resolve a hook transform module path relative to the transforms base directory.
+ * Rejects absolute paths and path traversal to prevent arbitrary code loading.
+ */
+export function resolveModulePath(baseDir: string, target: string): string {
+  if (!target) {
+    throw new Error("hook transform module path is required");
+  }
+  if (path.isAbsolute(target)) {
+    throw new Error(
+      `absolute path not allowed for hook transform module: ${target}. Use a relative path within the transforms directory.`,
+    );
+  }
+  const resolved = path.resolve(baseDir, target);
+  const normalizedBase = path.resolve(baseDir);
+  if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+    throw new Error(
+      `hook transform module path escapes base directory: ${target}`,
+    );
+  }
+  return resolved;
+}
+
 function normalizeMatchPath(raw?: string): string | undefined {
   if (!raw) {
     return undefined;
@@ -367,23 +396,46 @@ function renderOptional(value: string | undefined, ctx: HookMappingContext) {
   return rendered ? rendered : undefined;
 }
 
-function renderTemplate(template: string, ctx: HookMappingContext) {
+type RenderTemplateOpts = {
+  /** Wrap payload/header/query interpolations with `<external-content>` markers. */
+  wrapExternalContent?: boolean;
+};
+
+function renderTemplate(template: string, ctx: HookMappingContext, opts?: RenderTemplateOpts) {
   if (!template) {
     return "";
   }
+  const wrap = opts?.wrapExternalContent === true;
   return template.replace(/\{\{\s*([^}]+)\s*\}\}/g, (_, expr: string) => {
-    const value = resolveTemplateExpr(expr.trim(), ctx);
+    const trimmedExpr = expr.trim();
+    const value = resolveTemplateExpr(trimmedExpr, ctx);
     if (value === undefined || value === null) {
       return "";
     }
+    let rendered: string;
     if (typeof value === "string") {
-      return value;
+      rendered = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      rendered = String(value);
+    } else {
+      rendered = JSON.stringify(value);
     }
-    if (typeof value === "number" || typeof value === "boolean") {
-      return String(value);
+    // Wrap external content (payload, headers, query) with markers so the
+    // agent can distinguish untrusted data from template instructions.
+    // Internal values (path, now) are not wrapped.
+    if (wrap && isExternalExpr(trimmedExpr) && rendered) {
+      return `<external-content>${rendered}</external-content>`;
     }
-    return JSON.stringify(value);
+    return rendered;
   });
+}
+
+/** Returns true when the template expression references external (untrusted) data. */
+function isExternalExpr(expr: string): boolean {
+  // "path" and "now" are safe internal values; everything else (payload.*,
+  // headers.*, query.*, or bare property names that resolve to payload) is
+  // external content.
+  return expr !== "path" && expr !== "now";
 }
 
 function resolveTemplateExpr(expr: string, ctx: HookMappingContext) {

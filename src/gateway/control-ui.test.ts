@@ -22,7 +22,7 @@ const makeResponse = (): {
 };
 
 describe("handleControlUiHttpRequest", () => {
-  it("sets anti-clickjacking headers for Control UI responses", async () => {
+  it("serves index.html with correct content-type and cache headers", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
     try {
       await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
@@ -35,8 +35,10 @@ describe("handleControlUiHttpRequest", () => {
         },
       );
       expect(handled).toBe(true);
-      expect(setHeader).toHaveBeenCalledWith("X-Frame-Options", "DENY");
-      expect(setHeader).toHaveBeenCalledWith("Content-Security-Policy", "frame-ancestors 'none'");
+      // Security headers (X-Frame-Options, CSP) are now applied globally in
+      // server-http.ts via applyGlobalSecurityHeaders(), not per-handler.
+      expect(setHeader).toHaveBeenCalledWith("Content-Type", "text/html; charset=utf-8");
+      expect(setHeader).toHaveBeenCalledWith("Cache-Control", "no-cache");
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }

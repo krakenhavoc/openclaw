@@ -127,6 +127,19 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
+/** Strip stack traces, filesystem paths, and truncate error messages for HTTP responses. */
+function sanitizeErrorMessage(err: unknown, maxLength = 200): string {
+  const raw = getErrorMessage(err);
+  // Take first line only (strip stack traces).
+  let message = raw.split("\n")[0] ?? "";
+  // Replace filesystem path patterns (3+ segments) with [path].
+  message = message.replace(/(?:\/[\w.@+-]+){3,}/g, "[path]");
+  if (message.length > maxLength) {
+    message = message.slice(0, maxLength) + "...";
+  }
+  return message || "invalid tool arguments";
+}
+
 function isToolInputError(err: unknown): boolean {
   if (err instanceof ToolInputError) {
     return true;
@@ -374,7 +387,7 @@ export async function handleToolsInvokeHttpRequest(
     if (isToolInputError(err)) {
       sendJson(res, 400, {
         ok: false,
-        error: { type: "tool_error", message: getErrorMessage(err) || "invalid tool arguments" },
+        error: { type: "tool_error", message: sanitizeErrorMessage(err) },
       });
       return true;
     }
