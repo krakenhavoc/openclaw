@@ -85,7 +85,7 @@ export async function resolveGatewayRuntimeConfig(params: {
   const canvasHostEnabled =
     process.env.OPENCLAW_SKIP_CANVAS_HOST !== "1" && params.cfg.canvasHost?.enabled !== false;
 
-  assertGatewayAuthConfigured(resolvedAuth);
+  assertGatewayAuthConfigured(resolvedAuth, { bindHost });
   if (tailscaleMode === "funnel" && authMode !== "password") {
     throw new Error(
       "tailscale funnel requires gateway auth mode=password (set gateway.auth.password or OPENCLAW_GATEWAY_PASSWORD)",

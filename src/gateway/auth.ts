@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { GatewayAuthConfig, GatewayTailscaleMode } from "../config/config.js";
 import { readTailscaleWhoisIdentity, type TailscaleWhoisIdentity } from "../infra/tailscale.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
+import { isLoopbackHost } from "./net.js";
 import {
   AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
   type AuthRateLimiter,
@@ -210,7 +211,12 @@ export function resolveGatewayAuth(params: {
   };
 }
 
-export function assertGatewayAuthConfigured(auth: ResolvedGatewayAuth): void {
+const MIN_TOKEN_LENGTH = 24;
+
+export function assertGatewayAuthConfigured(
+  auth: ResolvedGatewayAuth,
+  opts?: { bindHost?: string },
+): void {
   if (auth.mode === "token" && !auth.token) {
     if (auth.allowTailscale) {
       return;
@@ -221,6 +227,20 @@ export function assertGatewayAuthConfigured(auth: ResolvedGatewayAuth): void {
   }
   if (auth.mode === "password" && !auth.password) {
     throw new Error("gateway auth mode is password, but no password was configured");
+  }
+
+  // Enforce minimum token length for non-loopback bindings.
+  if (
+    auth.mode === "token" &&
+    auth.token &&
+    auth.token.length < MIN_TOKEN_LENGTH &&
+    opts?.bindHost &&
+    !isLoopbackHost(opts.bindHost)
+  ) {
+    throw new Error(
+      `gateway auth token is too short (${auth.token.length} chars, minimum ${MIN_TOKEN_LENGTH}). ` +
+        "Use a random token of at least 24 characters for non-loopback bindings.",
+    );
   }
 }
 
