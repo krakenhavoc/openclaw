@@ -23,6 +23,7 @@ type OpenAiHttpOptions = {
   maxBodyBytes?: number;
   trustedProxies?: string[];
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 type OpenAiChatMessage = {
@@ -160,7 +161,8 @@ function resolveOpenAiSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   return resolveSessionKey({ ...params, prefix: "openai" });
 }
 
@@ -210,7 +212,22 @@ export async function handleOpenAiHttpRequest(
   const user = typeof payload.user === "string" ? payload.user : undefined;
 
   const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveOpenAiSessionKey({ req, agentId, user });
+  const sessionKey = resolveOpenAiSessionKey({
+    req,
+    agentId,
+    user,
+    allowOverride: opts.allowSessionKeyOverride,
+  });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
   const prompt = buildAgentPrompt(payload.messages);
   if (!prompt.message) {
     sendJson(res, 400, {

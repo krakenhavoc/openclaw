@@ -340,15 +340,20 @@ function collectGatewayConfigFindings(
   if (auth.mode === "token" && token && token.length < 24) {
     findings.push({
       checkId: "gateway.token_too_short",
-      severity: "warn",
+      severity: remotelyExposed ? "error" : "warn",
       title: "Gateway token looks short",
-      detail: `gateway auth token is ${token.length} chars; prefer a long random token.`,
+      detail:
+        `gateway auth token is ${token.length} chars; minimum 24 recommended. ` +
+        (remotelyExposed
+          ? "Non-loopback bindings now reject tokens shorter than 24 characters at startup."
+          : "Short tokens are allowed for loopback-only bindings but not recommended."),
     });
   }
 
   const chatCompletionsEnabled = cfg.gateway?.http?.endpoints?.chatCompletions?.enabled === true;
   const responsesEnabled = cfg.gateway?.http?.endpoints?.responses?.enabled === true;
-  if (chatCompletionsEnabled || responsesEnabled) {
+  const allowSessionKeyOverride = cfg.gateway?.http?.allowSessionKeyOverride === true;
+  if ((chatCompletionsEnabled || responsesEnabled) && allowSessionKeyOverride) {
     const enabledEndpoints = [
       chatCompletionsEnabled ? "/v1/chat/completions" : null,
       responsesEnabled ? "/v1/responses" : null,
@@ -358,10 +363,11 @@ function collectGatewayConfigFindings(
       severity: remotelyExposed ? "warn" : "info",
       title: "HTTP APIs accept explicit session key override headers",
       detail:
-        `${enabledEndpoints.join(", ")} support x-openclaw-session-key. ` +
+        `${enabledEndpoints.join(", ")} support x-openclaw-session-key (gateway.http.allowSessionKeyOverride is true). ` +
         "Any authenticated caller can route requests into arbitrary sessions.",
       remediation:
-        "Treat HTTP API credentials as full-trust, disable unused endpoints, and avoid sharing tokens across tenants.",
+        "Set gateway.http.allowSessionKeyOverride to false (default) unless you explicitly need it, " +
+        "and avoid sharing tokens across tenants.",
     });
   }
 

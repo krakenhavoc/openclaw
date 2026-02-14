@@ -62,15 +62,28 @@ export function resolveAgentIdForRequest(params: {
   return fromModel ?? "main";
 }
 
+/**
+ * Resolve the session key for an HTTP API request.
+ *
+ * When `allowOverride` is `true` the caller may supply an explicit key via
+ * the `x-openclaw-session-key` header.  When `false` (the **default**) or
+ * omitted, the header is checked: if present the function returns `null`
+ * to signal that the caller should reject the request with 403.
+ */
 export function resolveSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
   prefix: string;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   const explicit = getHeader(params.req, "x-openclaw-session-key")?.trim();
   if (explicit) {
-    return explicit;
+    if (params.allowOverride) {
+      return explicit;
+    }
+    // Header present but override not allowed — signal rejection.
+    return null;
   }
 
   const user = params.user?.trim();

@@ -223,6 +223,15 @@ export type GatewayHttpEndpointsConfig = {
 
 export type GatewayHttpConfig = {
   endpoints?: GatewayHttpEndpointsConfig;
+  /**
+   * Allow HTTP API callers to override the session key via the
+   * `x-openclaw-session-key` header.  Default: `false`.
+   *
+   * When disabled (default), authenticated callers can only interact with
+   * auto-generated sessions.  Enable only when you fully trust every
+   * holder of the gateway token.
+   */
+  allowSessionKeyOverride?: boolean;
 };
 
 export type GatewayNodesConfig = {

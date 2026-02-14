@@ -63,6 +63,7 @@ type OpenResponsesHttpOptions = {
   config?: GatewayHttpResponsesConfig;
   trustedProxies?: string[];
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 const DEFAULT_BODY_BYTES = 20 * 1024 * 1024;
@@ -268,7 +269,8 @@ function resolveOpenResponsesSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   return resolveSessionKey({ ...params, prefix: "openresponses" });
 }
 
@@ -511,7 +513,22 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
   const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveOpenResponsesSessionKey({ req, agentId, user });
+  const sessionKey = resolveOpenResponsesSessionKey({
+    req,
+    agentId,
+    user,
+    allowOverride: opts.allowSessionKeyOverride,
+  });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
 
   // Build prompt from input
   const prompt = buildAgentPrompt(payload.input);

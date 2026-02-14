@@ -1143,6 +1143,7 @@ describe("security audit", () => {
             chatCompletions: { enabled: true },
             responses: { enabled: true },
           },
+          allowSessionKeyOverride: true,
         },
       },
     };

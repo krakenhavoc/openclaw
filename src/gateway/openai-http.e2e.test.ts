@@ -173,7 +173,6 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       }
 
       {
-        mockAgentOnce([{ text: "hello" }]);
         const res = await postChatCompletions(
           port,
           { model: "openclaw", messages: [{ role: "user", content: "hi" }] },
@@ -182,12 +181,8 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
             "x-openclaw-session-key": "agent:beta:openai:custom",
           },
         );
-        expect(res.status).toBe(200);
-
-        const [opts] = agentCommand.mock.calls[0] ?? [];
-        expect((opts as { sessionKey?: string } | undefined)?.sessionKey).toBe(
-          "agent:beta:openai:custom",
-        );
+        // Default: session key override not allowed → 403
+        expect(res.status).toBe(403);
         await res.text();
       }
 
@@ -469,6 +464,34 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       }
     } finally {
       // shared server
+    }
+  });
+
+  it("allows session key override when gateway.http.allowSessionKeyOverride is true", async () => {
+    testState.gatewayHttp = { allowSessionKeyOverride: true };
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const res = await postChatCompletions(
+        port,
+        { model: "openclaw", messages: [{ role: "user", content: "hi" }] },
+        {
+          "x-openclaw-agent-id": "beta",
+          "x-openclaw-session-key": "agent:beta:openai:custom",
+        },
+      );
+      expect(res.status).toBe(200);
+
+      const [opts] = agentCommand.mock.calls[0] ?? [];
+      expect((opts as { sessionKey?: string } | undefined)?.sessionKey).toBe(
+        "agent:beta:openai:custom",
+      );
+      await res.text();
+    } finally {
+      testState.gatewayHttp = undefined;
+      await server.close({ reason: "session key override test done" });
     }
   });
 });
