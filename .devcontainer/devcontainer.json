@@ -1,0 +1,44 @@
+{
+  "name": "OpenClaw",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "editor.formatOnSave": true,
+        "files.insertFinalNewline": true,
+        "files.trimFinalNewlines": true,
+        "[javascript]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[typescriptreact]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "[json]": {
+          "editor.defaultFormatter": "oxc.oxc-vscode"
+        },
+        "typescript.preferences.importModuleSpecifierEnding": "js",
+        "typescript.reportStyleChecksAsWarnings": false,
+        "typescript.updateImportsOnFileMove.enabled": "always",
+        "typescript.tsdk": "node_modules/typescript/lib",
+        "typescript.experimental.useTsgo": true
+      },
+      "extensions": [
+        "oxc.oxc-vscode",
+        "vitest.explorer"
+      ]
+    }
+  },
+  "forwardPorts": [18789],
+  "postCreateCommand": "pnpm install",
+  "remoteUser": "node"
+}
