@@ -2,8 +2,6 @@
 FILES=$(git diff --cached --name-only --diff-filter=ACMR | sed 's| |\\ |g')
 [ -z "$FILES" ] && exit 0
 
-echo "$FILES" | xargs pnpm lint --fix
-echo "$FILES" | xargs pnpm format --no-error-on-unmatched-pattern
+echo "$FILES" | xargs pnpm lint --fix || exit 1
+echo "$FILES" | xargs pnpm format --no-error-on-unmatched-pattern || exit 1
 echo "$FILES" | xargs git add
-
-exit 0
