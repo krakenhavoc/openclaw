@@ -54,6 +54,7 @@ import { getBearerToken, getHeader } from "./http-utils.js";
 import { isPrivateOrLoopbackAddress, resolveGatewayClientIp } from "./net.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
+import { applyGlobalSecurityHeaders, applyHstsHeader } from "./http-security-headers.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -199,7 +200,18 @@ export function createHooksRequestHandler(
   const hookAuthFailures = new Map<string, HookAuthFailure>();
 
   const resolveHookClientKey = (req: IncomingMessage): string => {
-    return req.socket?.remoteAddress?.trim() || "unknown";
+    const cfg = loadConfig();
+    const trustedProxies = cfg.gateway?.trustedProxies ?? [];
+    return (
+      resolveGatewayClientIp({
+        remoteAddr: req.socket?.remoteAddress ?? "",
+        forwardedFor: getHeader(req, "x-forwarded-for"),
+        realIp: getHeader(req, "x-real-ip"),
+        trustedProxies,
+      }) ??
+      req.socket?.remoteAddress?.trim() ??
+      "unknown"
+    );
   };
 
   const recordHookAuthFailure = (
@@ -479,6 +491,12 @@ export function createGatewayHttpServer(opts: {
       return;
     }
 
+    // Security headers on every HTTP response.
+    applyGlobalSecurityHeaders(res);
+    if (opts.tlsOptions) {
+      applyHstsHeader(res);
+    }
+
     try {
       const configSnapshot = loadConfig();
       const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
@@ -527,6 +545,8 @@ export function createGatewayHttpServer(opts: {
             config: openResponsesConfig,
             trustedProxies,
             rateLimiter,
+            allowSessionKeyOverride:
+              configSnapshot.gateway?.http?.allowSessionKeyOverride === true,
           })
         ) {
           return;
@@ -538,6 +558,8 @@ export function createGatewayHttpServer(opts: {
             auth: resolvedAuth,
             trustedProxies,
             rateLimiter,
+            allowSessionKeyOverride:
+              configSnapshot.gateway?.http?.allowSessionKeyOverride === true,
           })
         ) {
           return;
