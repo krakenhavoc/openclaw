@@ -292,6 +292,11 @@ export type GatewayHttpSecurityHeadersConfig = {
 export type GatewayHttpConfig = {
   endpoints?: GatewayHttpEndpointsConfig;
   securityHeaders?: GatewayHttpSecurityHeadersConfig;
+  /**
+   * Allow callers to override the session key via `x-openclaw-session-key` header.
+   * Default: false — the header is silently ignored and a 403 is returned.
+   */
+  allowSessionKeyOverride?: boolean;
 };
 
 export type GatewayNodesConfig = {

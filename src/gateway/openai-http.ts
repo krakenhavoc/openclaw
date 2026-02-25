@@ -1,5 +1,7 @@
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
+import type { ResolvedGatewayAuth } from "./auth.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
@@ -10,8 +12,6 @@ import {
   buildAgentMessageFromConversationEntries,
   type ConversationEntry,
 } from "./agent-prompt.js";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import type { ResolvedGatewayAuth } from "./auth.js";
 import { sendJson, setSseHeaders, writeDone } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import { resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
@@ -22,6 +22,7 @@ type OpenAiHttpOptions = {
   trustedProxies?: string[];
   allowRealIpFallback?: boolean;
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 type OpenAiChatMessage = {
@@ -176,7 +177,8 @@ function resolveOpenAiSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   return resolveSessionKey({ ...params, prefix: "openai" });
 }
 
@@ -225,7 +227,22 @@ export async function handleOpenAiHttpRequest(
   const user = typeof payload.user === "string" ? payload.user : undefined;
 
   const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveOpenAiSessionKey({ req, agentId, user });
+  const sessionKey = resolveOpenAiSessionKey({
+    req,
+    agentId,
+    user,
+    allowOverride: opts.allowSessionKeyOverride,
+  });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
   const prompt = buildAgentPrompt(payload.messages);
   if (!prompt.message) {
     sendJson(res, 400, {

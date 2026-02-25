@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import {
   resolveEffectiveToolPolicy,
@@ -23,7 +24,6 @@ import { getPluginToolMeta } from "../plugins/tools.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { DEFAULT_GATEWAY_HTTP_TOOL_DENY } from "../security/dangerous-tools.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import { authorizeHttpGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
 import {
   readJsonBodyOrError,
@@ -110,6 +110,18 @@ function getErrorMessage(err: unknown): string {
     return err;
   }
   return String(err);
+}
+
+function sanitizeErrorMessage(err: unknown, maxLength = 200): string {
+  let msg = getErrorMessage(err);
+  // Strip stack traces (lines starting with "at ...")
+  msg = msg.replace(/\n\s+at\s.+/g, "");
+  // Obfuscate filesystem paths (3+ segments)
+  msg = msg.replace(/(?:\/[\w.@+-]+){3,}/g, "[path]");
+  if (msg.length > maxLength) {
+    msg = msg.slice(0, maxLength) + "...";
+  }
+  return msg;
 }
 
 function resolveToolInputErrorStatus(err: unknown): number | null {
@@ -323,7 +335,10 @@ export async function handleToolsInvokeHttpRequest(
     if (inputStatus !== null) {
       sendJson(res, inputStatus, {
         ok: false,
-        error: { type: "tool_error", message: getErrorMessage(err) || "invalid tool arguments" },
+        error: {
+          type: "tool_error",
+          message: sanitizeErrorMessage(err) || "invalid tool arguments",
+        },
       });
       return true;
     }

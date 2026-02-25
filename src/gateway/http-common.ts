@@ -3,16 +3,19 @@ import type { GatewayAuthResult } from "./auth.js";
 import { readJsonBody } from "./hooks.js";
 
 /**
- * Apply baseline security headers that are safe for all response types (API JSON,
- * HTML pages, static assets, SSE streams). Headers that restrict framing or set a
- * Content-Security-Policy are intentionally omitted here because some handlers
- * (canvas host, A2UI) serve content that may be loaded inside frames.
+ * Apply baseline security headers for all response types (API JSON, HTML pages,
+ * static assets, SSE streams).
+ *
+ * X-Frame-Options: DENY is set globally to prevent click-jacking.  Handlers that
+ * need framing (canvas host, A2UI) already set their own response headers which
+ * override the global value.
  */
 export function setDefaultSecurityHeaders(
   res: ServerResponse,
   opts?: { strictTransportSecurity?: string },
 ) {
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   const strictTransportSecurity = opts?.strictTransportSecurity;
   if (typeof strictTransportSecurity === "string" && strictTransportSecurity.length > 0) {
