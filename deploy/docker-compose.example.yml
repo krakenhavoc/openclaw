@@ -1,0 +1,42 @@
+# Example Docker Compose for OpenClaw with SearxNG.
+#
+# Copy this file to docker-compose.yml and adjust paths/credentials.
+# See also: deploy/searxng/settings.yml for SearxNG configuration.
+#
+# Usage:
+#   cp deploy/docker-compose.example.yml docker-compose.yml
+#   # Edit docker-compose.yml with your paths and settings
+#   docker compose up -d
+
+services:
+  openclaw:
+    build: .
+    container_name: openclaw
+    restart: unless-stopped
+    volumes:
+      # Mount your OpenClaw data directory (config, agents, credentials)
+      - ./deploy/openclaw-data:/app/data
+    environment:
+      - NODE_ENV=production
+    networks:
+      - llm-net
+    depends_on:
+      - searxng
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    volumes:
+      - ./deploy/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - llm-net
+    # Expose port only if you want to access the SearxNG UI directly.
+    # OpenClaw connects via the Docker network (http://searxng:8080).
+    # ports:
+    #   - "8888:8080"
+
+networks:
+  llm-net:
+    name: llm-net
+    driver: bridge

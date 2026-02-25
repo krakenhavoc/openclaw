@@ -120,3 +120,13 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+
+# Personal deployment data (NEVER COMMIT)
+deploy/openclaw-data/
+deploy/signal-cli-data/
+deploy/ollama/
+deploy/open-webui/
+
+# Claude Code local settings
+.claude/
+claude/
