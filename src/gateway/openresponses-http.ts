@@ -6,13 +6,15 @@
  * @see https://www.open-responses.com/
  */
 
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import type { ClientToolDefinition } from "../agents/pi-embedded-runner/run/params.js";
-import { createDefaultDeps } from "../cli/deps.js";
-import { agentCommand } from "../commands/agent.js";
 import type { ImageContent } from "../commands/agent/types.js";
 import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
+import type { ResolvedGatewayAuth } from "./auth.js";
+import { createDefaultDeps } from "../cli/deps.js";
+import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
 import {
@@ -30,8 +32,6 @@ import {
 } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveAssistantStreamDeltaText } from "./agent-event-assistant-text.js";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import type { ResolvedGatewayAuth } from "./auth.js";
 import { sendJson, setSseHeaders, writeDone } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
 import { resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
@@ -52,6 +52,7 @@ type OpenResponsesHttpOptions = {
   trustedProxies?: string[];
   allowRealIpFallback?: boolean;
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 const DEFAULT_BODY_BYTES = 20 * 1024 * 1024;
@@ -155,7 +156,8 @@ function resolveOpenResponsesSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   return resolveSessionKey({ ...params, prefix: "openresponses" });
 }
 
@@ -413,7 +415,22 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
   const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveOpenResponsesSessionKey({ req, agentId, user });
+  const sessionKey = resolveOpenResponsesSessionKey({
+    req,
+    agentId,
+    user,
+    allowOverride: opts.allowSessionKeyOverride,
+  });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
 
   // Build prompt from input
   const prompt = buildAgentPrompt(payload.input);

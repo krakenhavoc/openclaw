@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { randomUUID } from "node:crypto";
 import { buildAgentMainSessionKey, normalizeAgentId } from "../routing/session-key.js";
 
 export function getHeader(req: IncomingMessage, name: string): string | undefined {
@@ -67,9 +67,13 @@ export function resolveSessionKey(params: {
   agentId: string;
   user?: string | undefined;
   prefix: string;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   const explicit = getHeader(params.req, "x-openclaw-session-key")?.trim();
   if (explicit) {
+    if (!params.allowOverride) {
+      return null;
+    }
     return explicit;
   }
 

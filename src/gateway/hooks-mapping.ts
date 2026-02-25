@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { HookMessageChannel } from "./hooks.js";
 import { CONFIG_PATH, type HookMappingConfig, type HooksConfig } from "../config/config.js";
 import { importFileModule, resolveFunctionModuleExport } from "../hooks/module-loader.js";
-import type { HookMessageChannel } from "./hooks.js";
 
 export type HookMappingResolved = {
   id: string;
@@ -240,8 +240,11 @@ function buildActionFromMapping(
   mapping: HookMappingResolved,
   ctx: HookMappingContext,
 ): HookMappingResult {
+  const wrapOpts: RenderTemplateOpts = {
+    wrapExternalContent: !mapping.allowUnsafeExternalContent,
+  };
   if (mapping.action === "wake") {
-    const text = renderTemplate(mapping.textTemplate ?? "", ctx);
+    const text = renderTemplate(mapping.textTemplate ?? "", ctx, wrapOpts);
     return {
       ok: true,
       action: {
@@ -251,22 +254,22 @@ function buildActionFromMapping(
       },
     };
   }
-  const message = renderTemplate(mapping.messageTemplate ?? "", ctx);
+  const message = renderTemplate(mapping.messageTemplate ?? "", ctx, wrapOpts);
   return {
     ok: true,
     action: {
       kind: "agent",
       message,
-      name: renderOptional(mapping.name, ctx),
+      name: renderOptional(mapping.name, ctx, wrapOpts),
       agentId: mapping.agentId,
       wakeMode: mapping.wakeMode ?? "now",
-      sessionKey: renderOptional(mapping.sessionKey, ctx),
+      sessionKey: renderOptional(mapping.sessionKey, ctx, wrapOpts),
       deliver: mapping.deliver,
       allowUnsafeExternalContent: mapping.allowUnsafeExternalContent,
       channel: mapping.channel,
-      to: renderOptional(mapping.to, ctx),
-      model: renderOptional(mapping.model, ctx),
-      thinking: renderOptional(mapping.thinking, ctx),
+      to: renderOptional(mapping.to, ctx, wrapOpts),
+      model: renderOptional(mapping.model, ctx, wrapOpts),
+      thinking: renderOptional(mapping.thinking, ctx, wrapOpts),
       timeoutSeconds: mapping.timeoutSeconds,
     },
   };
@@ -349,7 +352,7 @@ function resolveTransformFn(mod: Record<string, unknown>, exportName?: string): 
   return candidate;
 }
 
-function resolvePath(baseDir: string, target: string): string {
+function resolveModulePath(baseDir: string, target: string): string {
   if (!target) {
     return path.resolve(baseDir);
   }
@@ -390,7 +393,11 @@ function resolveContainedPath(baseDir: string, target: string, label: string): s
   if (!trimmed) {
     throw new Error(`${label} module path is required`);
   }
-  const resolved = resolvePath(base, trimmed);
+  // Reject path traversal patterns before resolution
+  if (trimmed.includes("..")) {
+    throw new Error(`${label} path must not contain path traversal: ${trimmed}`);
+  }
+  const resolved = resolveModulePath(base, trimmed);
   if (escapesBase(base, resolved)) {
     throw new Error(`${label} module path must be within ${base}: ${target}`);
   }
@@ -433,30 +440,54 @@ function normalizeMatchPath(raw?: string): string | undefined {
   return trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
-function renderOptional(value: string | undefined, ctx: HookMappingContext) {
+type RenderTemplateOpts = {
+  wrapExternalContent?: boolean;
+};
+
+function renderOptional(
+  value: string | undefined,
+  ctx: HookMappingContext,
+  opts?: RenderTemplateOpts,
+) {
   if (!value) {
     return undefined;
   }
-  const rendered = renderTemplate(value, ctx).trim();
+  const rendered = renderTemplate(value, ctx, opts).trim();
   return rendered ? rendered : undefined;
 }
 
-function renderTemplate(template: string, ctx: HookMappingContext) {
+function isExternalExpr(expr: string): boolean {
+  return (
+    expr.startsWith("payload.") ||
+    expr.startsWith("headers.") ||
+    expr.startsWith("query.") ||
+    (!expr.includes(".") && expr !== "path" && expr !== "now")
+  );
+}
+
+function renderTemplate(template: string, ctx: HookMappingContext, opts?: RenderTemplateOpts) {
   if (!template) {
     return "";
   }
+  const wrap = opts?.wrapExternalContent !== false;
   return template.replace(/\{\{\s*([^}]+)\s*\}\}/g, (_, expr: string) => {
-    const value = resolveTemplateExpr(expr.trim(), ctx);
+    const trimmedExpr = expr.trim();
+    const value = resolveTemplateExpr(trimmedExpr, ctx);
     if (value === undefined || value === null) {
       return "";
     }
+    let rendered: string;
     if (typeof value === "string") {
-      return value;
+      rendered = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      rendered = String(value);
+    } else {
+      rendered = JSON.stringify(value);
     }
-    if (typeof value === "number" || typeof value === "boolean") {
-      return String(value);
+    if (wrap && isExternalExpr(trimmedExpr)) {
+      return `<external-content>${rendered}</external-content>`;
     }
-    return JSON.stringify(value);
+    return rendered;
   });
 }
 

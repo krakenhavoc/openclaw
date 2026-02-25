@@ -16,6 +16,14 @@ services:
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
     init: true
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
     command:
       [
         "node",
@@ -43,4 +51,12 @@ services:
     stdin_open: true
     tty: true
     init: true
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
     entrypoint: ["node", "dist/index.js"]
