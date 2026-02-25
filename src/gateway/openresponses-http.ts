@@ -53,6 +53,7 @@ type OpenResponsesHttpOptions = {
   trustedProxies?: string[];
   allowRealIpFallback?: boolean;
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 const DEFAULT_BODY_BYTES = 20 * 1024 * 1024;
@@ -433,7 +434,18 @@ export async function handleOpenResponsesHttpRequest(
     sessionPrefix: "openresponses",
     defaultMessageChannel: "webchat",
     useMessageChannelHeader: false,
+    allowOverride: opts.allowSessionKeyOverride,
   });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
 
   // Build prompt from input
   const prompt = buildAgentPrompt(payload.input);

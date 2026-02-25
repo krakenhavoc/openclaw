@@ -68,9 +68,13 @@ export function resolveSessionKey(params: {
   agentId: string;
   user?: string | undefined;
   prefix: string;
-}): string {
+  allowOverride?: boolean;
+}): string | null {
   const explicit = getHeader(params.req, "x-openclaw-session-key")?.trim();
   if (explicit) {
+    if (!params.allowOverride) {
+      return null;
+    }
     return explicit;
   }
 
@@ -86,13 +90,15 @@ export function resolveGatewayRequestContext(params: {
   sessionPrefix: string;
   defaultMessageChannel: string;
   useMessageChannelHeader?: boolean;
-}): { agentId: string; sessionKey: string; messageChannel: string } {
+  allowOverride?: boolean;
+}): { agentId: string; sessionKey: string | null; messageChannel: string } {
   const agentId = resolveAgentIdForRequest({ req: params.req, model: params.model });
   const sessionKey = resolveSessionKey({
     req: params.req,
     agentId,
     user: params.user,
     prefix: params.sessionPrefix,
+    allowOverride: params.allowOverride,
   });
 
   const messageChannel = params.useMessageChannelHeader

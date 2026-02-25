@@ -37,6 +37,7 @@ type OpenAiHttpOptions = {
   trustedProxies?: string[];
   allowRealIpFallback?: boolean;
   rateLimiter?: AuthRateLimiter;
+  allowSessionKeyOverride?: boolean;
 };
 
 type OpenAiChatMessage = {
@@ -438,7 +439,18 @@ export async function handleOpenAiHttpRequest(
     sessionPrefix: "openai",
     defaultMessageChannel: "webchat",
     useMessageChannelHeader: true,
+    allowOverride: opts.allowSessionKeyOverride,
   });
+  if (sessionKey === null) {
+    sendJson(res, 403, {
+      error: {
+        message:
+          "Session key override is not allowed. Set gateway.http.allowSessionKeyOverride to enable.",
+        type: "forbidden",
+      },
+    });
+    return true;
+  }
   const activeTurnContext = resolveActiveTurnContext(payload.messages);
   const prompt = buildAgentPrompt(payload.messages, activeTurnContext.activeUserMessageIndex);
   let images: ImageContent[] = [];

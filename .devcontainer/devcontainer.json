@@ -1,0 +1,26 @@
+{
+  "name": "OpenClaw",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "oxc.oxc-vscode",
+        "[typescript]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+        "[javascript]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+        "[json]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+        "typescript.preferences.importModuleSpecifierEnding": "js"
+      },
+      "extensions": ["oxc.oxc-vscode", "vitest.explorer"]
+    }
+  },
+  "forwardPorts": [18789],
+  "postCreateCommand": "pnpm install",
+  "remoteUser": "node"
+}

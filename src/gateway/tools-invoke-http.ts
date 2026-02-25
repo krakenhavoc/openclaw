@@ -112,6 +112,18 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
+function sanitizeErrorMessage(err: unknown, maxLength = 200): string {
+  let msg = getErrorMessage(err);
+  // Strip stack traces (lines starting with "at ...")
+  msg = msg.replace(/\n\s+at\s.+/g, "");
+  // Obfuscate filesystem paths (3+ segments)
+  msg = msg.replace(/(?:\/[\w.@+-]+){3,}/g, "[path]");
+  if (msg.length > maxLength) {
+    msg = msg.slice(0, maxLength) + "...";
+  }
+  return msg;
+}
+
 function resolveToolInputErrorStatus(err: unknown): number | null {
   if (err instanceof ToolInputError) {
     const status = (err as { status?: unknown }).status;
@@ -325,7 +337,10 @@ export async function handleToolsInvokeHttpRequest(
     if (inputStatus !== null) {
       sendJson(res, inputStatus, {
         ok: false,
-        error: { type: "tool_error", message: getErrorMessage(err) || "invalid tool arguments" },
+        error: {
+          type: "tool_error",
+          message: sanitizeErrorMessage(err) || "invalid tool arguments",
+        },
       });
       return true;
     }

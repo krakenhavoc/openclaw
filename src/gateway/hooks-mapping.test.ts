@@ -199,7 +199,7 @@ describe("hooks mapping", () => {
         },
         { configDir },
       ),
-    ).toThrow(/must be within/);
+    ).toThrow(/path traversal/);
   });
 
   it("rejects absolute transform module path outside transformsDir", () => {
@@ -511,6 +511,57 @@ describe("hooks mapping", () => {
         payload: { prototype: "leaked" } as Record<string, unknown>,
         expectedMessage: "val: ",
       });
+    });
+  });
+
+  describe("external content wrapping", () => {
+    it("wraps external payload expressions with external-content markers", async () => {
+      const mappings = resolveHookMappings({
+        mappings: [
+          {
+            id: "wrap-test",
+            match: { path: "test" },
+            action: "agent" as const,
+            messageTemplate: "Subject: {{payload.subject}}",
+          },
+        ],
+      });
+      const result = await applyHookMappings(mappings, {
+        payload: { subject: "Hello World" },
+        headers: {},
+        url: new URL("http://127.0.0.1:18789/hooks/test"),
+        path: "test",
+      });
+      expect(result?.ok).toBe(true);
+      if (result?.ok && result.action?.kind === "agent") {
+        expect(result.action.message).toBe(
+          "Subject: <external-content>Hello World</external-content>",
+        );
+      }
+    });
+
+    it("skips wrapping when allowUnsafeExternalContent is true", async () => {
+      const mappings = resolveHookMappings({
+        mappings: [
+          {
+            id: "unsafe-test",
+            match: { path: "test" },
+            action: "agent" as const,
+            messageTemplate: "Subject: {{payload.subject}}",
+            allowUnsafeExternalContent: true,
+          },
+        ],
+      });
+      const result = await applyHookMappings(mappings, {
+        payload: { subject: "Hello World" },
+        headers: {},
+        url: new URL("http://127.0.0.1:18789/hooks/test"),
+        path: "test",
+      });
+      expect(result?.ok).toBe(true);
+      if (result?.ok && result.action?.kind === "agent") {
+        expect(result.action.message).toBe("Subject: Hello World");
+      }
     });
   });
 });

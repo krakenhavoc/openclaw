@@ -16,6 +16,7 @@ import { resolveGatewayCredentialsFromValues } from "./credentials.js";
 import {
   isLocalishHost,
   isLoopbackAddress,
+  isLoopbackHost,
   isTrustedProxyAddress,
   resolveClientIp,
 } from "./net.js";
@@ -291,9 +292,12 @@ export function resolveGatewayAuth(params: {
   };
 }
 
+const MIN_TOKEN_LENGTH = 24;
+
 export function assertGatewayAuthConfigured(
   auth: ResolvedGatewayAuth,
   rawAuthConfig?: GatewayAuthConfig | null,
+  opts?: { bindHost?: string },
 ): void {
   if (auth.mode === "token" && !auth.token) {
     if (auth.allowTailscale) {
@@ -301,6 +305,17 @@ export function assertGatewayAuthConfigured(
     }
     throw new Error(
       "gateway auth mode is token, but no token was configured (set gateway.auth.token or OPENCLAW_GATEWAY_TOKEN)",
+    );
+  }
+  if (
+    auth.mode === "token" &&
+    auth.token &&
+    auth.token.length < MIN_TOKEN_LENGTH &&
+    opts?.bindHost &&
+    !isLoopbackHost(opts.bindHost)
+  ) {
+    throw new Error(
+      `gateway auth token is too short (${auth.token.length} chars, minimum ${MIN_TOKEN_LENGTH}). Use a random token of at least ${MIN_TOKEN_LENGTH} characters for non-loopback bindings.`,
     );
   }
   if (auth.mode === "password" && !auth.password) {
