@@ -1,9 +1,7 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { AuthRateLimiter } from "./auth-rate-limit.js";
-import type { ResolvedGatewayAuth } from "./auth.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createDefaultDeps } from "../cli/deps.js";
-import { agentCommand } from "../commands/agent.js";
+import { agentCommandFromIngress } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
 import { defaultRuntime } from "../runtime.js";
@@ -12,9 +10,11 @@ import {
   buildAgentMessageFromConversationEntries,
   type ConversationEntry,
 } from "./agent-prompt.js";
+import type { AuthRateLimiter } from "./auth-rate-limit.js";
+import type { ResolvedGatewayAuth } from "./auth.js";
 import { sendJson, setSseHeaders, writeDone } from "./http-common.js";
 import { handleGatewayPostJsonEndpoint } from "./http-endpoint-helpers.js";
-import { resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
+import { resolveGatewayRequestContext } from "./http-utils.js";
 
 type OpenAiHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -46,6 +46,7 @@ function buildAgentCommandInput(params: {
   prompt: { message: string; extraSystemPrompt?: string };
   sessionKey: string;
   runId: string;
+  messageChannel: string;
 }) {
   return {
     message: params.prompt.message,
@@ -53,8 +54,10 @@ function buildAgentCommandInput(params: {
     sessionKey: params.sessionKey,
     runId: params.runId,
     deliver: false as const,
-    messageChannel: "webchat" as const,
+    messageChannel: params.messageChannel,
     bestEffortDeliver: false as const,
+    // HTTP API callers are authenticated operator clients for this gateway context.
+    senderIsOwner: true as const,
   };
 }
 
@@ -173,15 +176,6 @@ function buildAgentPrompt(messagesUnknown: unknown): {
   };
 }
 
-function resolveOpenAiSessionKey(params: {
-  req: IncomingMessage;
-  agentId: string;
-  user?: string | undefined;
-  allowOverride?: boolean;
-}): string | null {
-  return resolveSessionKey({ ...params, prefix: "openai" });
-}
-
 function coerceRequest(val: unknown): OpenAiChatCompletionRequest {
   if (!val || typeof val !== "object") {
     return {};
@@ -226,12 +220,14 @@ export async function handleOpenAiHttpRequest(
   const model = typeof payload.model === "string" ? payload.model : "openclaw";
   const user = typeof payload.user === "string" ? payload.user : undefined;
 
-  const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveOpenAiSessionKey({
+  const { sessionKey, messageChannel } = resolveGatewayRequestContext({
     req,
-    agentId,
+    model,
     user,
-    allowOverride: opts.allowSessionKeyOverride,
+    sessionPrefix: "openai",
+    defaultMessageChannel: "webchat",
+    useMessageChannelHeader: true,
+    allowSessionKeyOverride: opts.allowSessionKeyOverride,
   });
   if (sessionKey === null) {
     sendJson(res, 403, {
@@ -260,11 +256,12 @@ export async function handleOpenAiHttpRequest(
     prompt,
     sessionKey,
     runId,
+    messageChannel,
   });
 
   if (!stream) {
     try {
-      const result = await agentCommand(commandInput, defaultRuntime, deps);
+      const result = await agentCommandFromIngress(commandInput, defaultRuntime, deps);
 
       const content = resolveAgentResponseText(result);
 
@@ -344,7 +341,7 @@ export async function handleOpenAiHttpRequest(
 
   void (async () => {
     try {
-      const result = await agentCommand(commandInput, defaultRuntime, deps);
+      const result = await agentCommandFromIngress(commandInput, defaultRuntime, deps);
 
       if (closed) {
         return;
