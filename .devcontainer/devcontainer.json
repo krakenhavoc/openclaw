@@ -17,7 +17,7 @@
         "[json]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
         "typescript.preferences.importModuleSpecifierEnding": "js"
       },
-      "extensions": ["oxc.oxc-vscode", "vitest.explorer"]
+      "extensions": ["oxc.oxc-vscode", "vitest.explorer", "anthropic.claude-code"]
     }
   },
   "forwardPorts": [18789],
