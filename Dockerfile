@@ -192,8 +192,13 @@ RUN for dir in /app/extensions /app/.agent /app/.agents; do \
     done
 
 # Expose the CLI binary without requiring npm global writes as non-root.
+# Also install Claude Code CLI for coding-agent skill support.
+USER root
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
- && chmod 755 /app/openclaw.mjs
+ && chmod 755 /app/openclaw.mjs \
+ && npm install -g @anthropic-ai/claude-code \
+ && apt-get update && apt-get install -y --no-install-recommends jq \
+ && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 
