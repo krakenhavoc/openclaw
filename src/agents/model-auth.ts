@@ -326,7 +326,12 @@ export function resolveEnvApiKey(provider: string): EnvApiKeyResult | null {
   };
   const envVar = envMap[normalized];
   if (!envVar) {
-    return null;
+    // Generic fallback for custom providers: convert provider name to the conventional
+    // env var pattern (e.g. "azure-foundry" → "AZURE_FOUNDRY_API_KEY").
+    // This allows any user-configured provider named "my-provider" to be authenticated
+    // via MY_PROVIDER_API_KEY without adding it to the hardcoded envMap above.
+    const genericVar = normalized.toUpperCase().replace(/-/g, "_") + "_API_KEY";
+    return pick(genericVar);
   }
   return pick(envVar);
 }
