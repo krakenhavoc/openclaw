@@ -103,7 +103,7 @@ import {
 } from "../google.js";
 import { getDmHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
-import { buildModelAliasLines } from "../model.js";
+import { buildModelAliasLines, isDeepSeekOnAzureFoundry } from "../model.js";
 import {
   clearActiveEmbeddedRun,
   type EmbeddedPiQueueHandle,
@@ -534,6 +534,467 @@ function wrapStreamFnDecodeXaiToolCallArguments(baseFn: StreamFn): StreamFn {
       );
     }
     return wrapStreamDecodeXaiToolCallArguments(maybeStream);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DeepSeek on Azure Foundry: extract inline tool calls from text content
+// ---------------------------------------------------------------------------
+// DeepSeek models hosted on Azure AI Foundry sometimes emit tool calls as
+// plain text in the response content (e.g. `exec{"command":"..."}`) instead
+// of structured `tool_calls`. This wrapper detects those patterns and
+// converts them into proper structured tool call blocks.
+
+/**
+ * Regex matching an inline tool call emitted as text by DeepSeek.
+ * The tool call can appear standalone or at the end of a larger text block
+ * (possibly preceded by conversational text on earlier lines).
+ * Captures: (1) optional preceding text, (2) tool name, (3) JSON object.
+ * Examples:
+ *   exec{"command": "ls -la"}
+ *   Let me check.\n    exec{"command": "curl ..."}
+ *   read{"file_path": "/tmp/foo.txt"}
+ *   exec({"command": "ls"})
+ */
+const INLINE_TOOL_CALL_RE = /^([\s\S]*?)(\w+)\(?(\{[\s\S]*\})\)?\s*$/;
+
+/** Fields that DeepSeek V3.2 may place inside standalone JSON to name the target tool. */
+const TOOL_NAME_JSON_FIELDS = ["action", "name", "tool", "function"] as const;
+
+/**
+ * Argument keys that uniquely identify a specific tool. Only unambiguous keys
+ * are listed (e.g. `query` is shared by memory_search and web_search).
+ */
+const UNIQUE_ARG_KEY_TO_TOOL: ReadonlyArray<{ key: string; tool: string }> = [
+  { key: "command", tool: "exec" },
+  { key: "file_path", tool: "read" },
+  { key: "path", tool: "read" },
+];
+
+/** Strip a trailing markdown code fence from preceding text so the UI
+ *  doesn't render a dangling ` ```json ` block after the tool call is removed. */
+function stripTrailingCodeFence(text: string): string {
+  return text.replace(/```(?:\w+)?\s*$/, "").trimEnd();
+}
+
+/**
+ * Try to extract an inline tool call from a text content block.
+ * Returns null if the text doesn't match the pattern or the JSON is invalid.
+ * When extracted, also returns `precedingText` (the conversational text
+ * before the tool call) so the caller can preserve it.
+ */
+export function extractInlineToolCall(
+  text: string,
+  allowedToolNames?: Set<string>,
+): { name: string; arguments: Record<string, unknown>; precedingText: string } | null {
+  // DeepSeek on Azure Foundry inserts non-printable control characters
+  // (e.g. \u0017 ETB, \u0015 NAK) around tool names. Strip them before matching.
+  // Preserve \t (\x09), \n (\x0a), \r (\x0d) as they're meaningful whitespace.
+  // eslint-disable-next-line no-control-regex
+  const cleaned = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+  const trimmed = cleaned.trim();
+
+  // Pattern 1: toolName{json} or toolName({json}) — DeepSeek V3/V3.1 style
+  const match = INLINE_TOOL_CALL_RE.exec(trimmed);
+  if (match) {
+    const [, preceding, toolName, jsonStr] = match;
+    if (toolName && jsonStr && (!allowedToolNames || allowedToolNames.has(toolName))) {
+      try {
+        const args = JSON.parse(jsonStr) as Record<string, unknown>;
+        if (args && typeof args === "object" && !Array.isArray(args)) {
+          return {
+            name: toolName,
+            arguments: args,
+            precedingText: stripTrailingCodeFence((preceding ?? "").trim()),
+          };
+        }
+      } catch {
+        // Fall through to standalone JSON extraction
+      }
+    }
+  }
+
+  // Pattern 2: Standalone JSON at end of text — DeepSeek V3.2 style.
+  // Handles: {{"action": "tool", ...}}, {"action": "tool", ...},
+  // {"command": "..."}, {"path": "..."} where keys identify the tool.
+  return extractStandaloneJsonToolCall(trimmed, allowedToolNames);
+}
+
+/**
+ * Find the position of the closing brace that matches the opening brace at
+ * `openIdx`, correctly handling nested braces and JSON string literals.
+ * Returns -1 if no matching brace is found.
+ */
+function findMatchingBrace(text: string, openIdx: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (ch === "{") {
+      depth++;
+    }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * Extract a tool call from standalone JSON anywhere in the text.
+ * DeepSeek V3.2 sometimes omits the tool name prefix and instead:
+ *   1. Wraps JSON in double braces with an `action` field:
+ *      {{"action": "memory_search", "query": "..."}}
+ *   2. Outputs bare JSON whose argument keys identify the tool:
+ *      {"command": "ls -la"}  →  exec
+ *      {"path": "/tmp/foo"}   →  read
+ *
+ * The model may also output garbled/repeated text AFTER the JSON block,
+ * so we find matching braces rather than assuming JSON extends to end-of-text.
+ */
+function extractStandaloneJsonToolCall(
+  text: string,
+  allowedToolNames?: Set<string>,
+): { name: string; arguments: Record<string, unknown>; precedingText: string } | null {
+  let pos = 0;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const idx = text.indexOf("{", pos);
+    if (idx < 0) {
+      break;
+    }
+
+    // Double braces: {{...}} — strip outer layer and parse inner JSON
+    if (idx + 1 < text.length && text[idx + 1] === "{") {
+      const innerClose = findMatchingBrace(text, idx + 1);
+      if (innerClose >= 0 && innerClose + 1 < text.length && text[innerClose + 1] === "}") {
+        const inner = text.slice(idx + 1, innerClose + 1);
+        const result = tryIdentifyToolFromJsonStr(
+          inner,
+          stripTrailingCodeFence(text.slice(0, idx).trimEnd()),
+          allowedToolNames,
+        );
+        if (result) {
+          return result;
+        }
+        pos = innerClose + 2;
+        continue;
+      }
+    }
+
+    // Single braces: find matching } and try JSON.parse on that substring
+    const closeIdx = findMatchingBrace(text, idx);
+    if (closeIdx >= 0) {
+      const candidate = text.slice(idx, closeIdx + 1);
+      const result = tryIdentifyToolFromJsonStr(
+        candidate,
+        stripTrailingCodeFence(text.slice(0, idx).trimEnd()),
+        allowedToolNames,
+      );
+      if (result) {
+        return result;
+      }
+      pos = closeIdx + 1;
+    } else {
+      pos = idx + 1;
+    }
+  }
+
+  return null;
+}
+
+/** Try to parse a JSON string and identify which tool it targets. */
+function tryIdentifyToolFromJsonStr(
+  jsonStr: string,
+  precedingText: string,
+  allowedToolNames?: Set<string>,
+): { name: string; arguments: Record<string, unknown>; precedingText: string } | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+
+  // Strategy 1: look for a tool name field inside the JSON (e.g. "action")
+  for (const field of TOOL_NAME_JSON_FIELDS) {
+    const value = parsed[field];
+    if (typeof value === "string" && value.trim()) {
+      const toolName = value.trim();
+      if (!allowedToolNames || allowedToolNames.has(toolName)) {
+        const rest: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (k !== field) {
+            rest[k] = v;
+          }
+        }
+        return { name: toolName, arguments: rest, precedingText };
+      }
+    }
+  }
+
+  // Strategy 2: match unique argument keys to known tools
+  if (allowedToolNames) {
+    for (const { key, tool } of UNIQUE_ARG_KEY_TO_TOOL) {
+      if (key in parsed && allowedToolNames.has(tool)) {
+        return { name: tool, arguments: parsed, precedingText };
+      }
+    }
+  }
+
+  return null;
+}
+
+let inlineToolCallCounter = 0;
+
+function extractInlineToolCallsFromMessage(message: unknown, allowedToolNames?: Set<string>): void {
+  if (!message || typeof message !== "object") {
+    return;
+  }
+  const msg = message as { content?: unknown };
+  const content = msg.content;
+  if (!Array.isArray(content)) {
+    return;
+  }
+
+  // Skip if the message already has structured tool calls.
+  const hasStructuredToolCalls = content.some(
+    (block: unknown) =>
+      block && typeof block === "object" && isToolCallBlockType((block as { type?: unknown }).type),
+  );
+  if (hasStructuredToolCalls) {
+    return;
+  }
+
+  const newContent: unknown[] = [];
+  let modified = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const block = content[i];
+    if (!block || typeof block !== "object") {
+      newContent.push(block);
+      continue;
+    }
+    const typedBlock = block as { type?: unknown; text?: unknown };
+    if (typedBlock.type !== "text" || typeof typedBlock.text !== "string") {
+      newContent.push(block);
+      continue;
+    }
+
+    const extracted = extractInlineToolCall(typedBlock.text, allowedToolNames);
+    log.info(
+      `DeepSeek inline extraction: text=${JSON.stringify(typedBlock.text.slice(0, 200))} extracted=${extracted ? `${extracted.name}(${JSON.stringify(extracted.arguments).slice(0, 100)})` : "null"}`,
+    );
+    if (!extracted) {
+      newContent.push(block);
+      continue;
+    }
+
+    // Preserve any conversational text that preceded the inline tool call.
+    if (extracted.precedingText) {
+      newContent.push({ type: "text", text: extracted.precedingText });
+    }
+
+    // Add a structured tool call block in place of the inline text.
+    newContent.push({
+      type: "toolCall",
+      id: `call_ds_inline_${++inlineToolCallCounter}`,
+      name: extracted.name,
+      arguments: extracted.arguments,
+    });
+    modified = true;
+  }
+
+  if (modified) {
+    msg.content = newContent;
+  }
+}
+
+/**
+ * Strip inline tool call text from a partial (streaming) message so the UI
+ * never renders raw `exec{...}` or `{"action":"read",...}` text.
+ *
+ * DeepSeek on Azure wraps inline tool calls in several ways:
+ *   1. Control chars (\u0017, \u0015) before the tool name
+ *   2. `exec{"command":"..."}` — tool name prefix + JSON
+ *   3. ````json\nexec{"command":"..."}` `` ``` `` — code-fenced tool call
+ *   4. `{"action":"read","file_path":"..."}` — standalone JSON with tool key
+ *   5. ````json\n{"action":"read",...}` `` ``` `` — code-fenced standalone JSON
+ *
+ * We find the earliest tool call signal, look backward for a markdown code
+ * fence, and truncate at whichever comes first.
+ */
+function stripPartialInlineToolCallText(partial: unknown, allowedToolNames?: Set<string>): void {
+  if (!partial || typeof partial !== "object") {
+    return;
+  }
+  const msg = partial as { content?: unknown[] };
+  if (!Array.isArray(msg.content)) {
+    return;
+  }
+  for (const block of msg.content) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const typed = block as { type?: string; text?: string };
+    if (typed.type !== "text" || typeof typed.text !== "string") {
+      continue;
+    }
+    // Control chars are the strongest signal — truncate at the first one.
+    // eslint-disable-next-line no-control-regex
+    const controlIdx = typed.text.search(/[\x00-\x08\x0b\x0c\x0e-\x1f]/);
+    if (controlIdx >= 0) {
+      typed.text = typed.text.slice(0, controlIdx).trimEnd();
+      continue;
+    }
+
+    // Find the earliest tool call start position.
+    let stripIdx = -1;
+
+    // A: toolName{ or toolName({ where toolName is an allowed tool.
+    //    Works for both complete and incomplete JSON.
+    if (allowedToolNames && allowedToolNames.size > 0) {
+      const toolBraceRe = /(\w+)\(?\{/g;
+      let m;
+      while ((m = toolBraceRe.exec(typed.text)) !== null) {
+        if (m[1] && allowedToolNames.has(m[1])) {
+          stripIdx = m.index;
+          break; // earliest match wins
+        }
+      }
+    }
+
+    // B: Standalone JSON with recognizable tool argument keys.
+    const standaloneMatch = typed.text.search(
+      /\{\{?\s*"?(?:action|name|tool|function|command|file_path|path|query)/,
+    );
+    if (standaloneMatch >= 0 && (stripIdx < 0 || standaloneMatch < stripIdx)) {
+      stripIdx = standaloneMatch;
+    }
+
+    if (stripIdx < 0) {
+      continue;
+    }
+
+    // Look backward from the strip point for a markdown code fence
+    // (e.g. ```json\n) that wraps the tool call — strip from the fence
+    // so the UI doesn't show a dangling code block.
+    const beforeStrip = typed.text.slice(0, stripIdx);
+    const fenceMatch = /```(?:\w+)?\s*\n?\s*$/.exec(beforeStrip);
+    if (fenceMatch) {
+      stripIdx = fenceMatch.index;
+    }
+
+    typed.text = typed.text.slice(0, stripIdx).trimEnd();
+  }
+}
+
+/**
+ * Shallow-clone a streaming partial's content blocks so that
+ * `stripPartialInlineToolCallText` mutations don't corrupt the
+ * stream's internal accumulation buffer. `streamSimple` reuses
+ * a single `output` object as both `event.partial` (streaming)
+ * and `event.message` (done) — mutating `.text` on a partial
+ * destroys the text the final extraction needs.
+ */
+function clonePartialForStripping(partial: unknown): unknown {
+  if (!partial || typeof partial !== "object") {
+    return partial;
+  }
+  const msg = partial as { content?: unknown[] };
+  if (!Array.isArray(msg.content)) {
+    return partial;
+  }
+  return {
+    ...msg,
+    content: msg.content.map((block) =>
+      block && typeof block === "object" ? { ...block } : block,
+    ),
+  };
+}
+
+function wrapStreamExtractDeepSeekInlineToolCalls(
+  stream: ReturnType<typeof streamSimple>,
+  allowedToolNames?: Set<string>,
+): ReturnType<typeof streamSimple> {
+  log.info("DeepSeek inline wrapper: wrapping stream for inline tool call extraction");
+  const originalResult = stream.result.bind(stream);
+  stream.result = async () => {
+    const message = await originalResult();
+    log.info(
+      `DeepSeek inline wrapper: result() called, message content types=[${Array.isArray((message as { content?: unknown[] })?.content) ? (message as { content: { type?: string }[] }).content.map((b) => b?.type).join(",") : "?"}]`,
+    );
+    extractInlineToolCallsFromMessage(message, allowedToolNames);
+    return message;
+  };
+
+  const originalAsyncIterator = stream[Symbol.asyncIterator].bind(stream);
+  (stream as { [Symbol.asyncIterator]: typeof originalAsyncIterator })[Symbol.asyncIterator] =
+    function () {
+      const iterator = originalAsyncIterator();
+      return {
+        async next() {
+          const result = await iterator.next();
+          if (!result.done && result.value && typeof result.value === "object") {
+            const event = result.value as { partial?: unknown; message?: unknown };
+            // Extract structured tool calls from the final complete message.
+            extractInlineToolCallsFromMessage(event.message, allowedToolNames);
+            // Strip tool call text from partials so the UI doesn't render it.
+            // Clone the partial first — streamSimple reuses a single object
+            // for both partial and done events, so mutating partial text would
+            // corrupt the accumulation buffer and prevent final extraction.
+            if (event.partial) {
+              const cloned = clonePartialForStripping(event.partial);
+              stripPartialInlineToolCallText(cloned, allowedToolNames);
+              event.partial = cloned;
+            }
+          }
+          return result;
+        },
+        async return(value?: unknown) {
+          return iterator.return?.(value) ?? { done: true as const, value: undefined };
+        },
+        async throw(error?: unknown) {
+          return iterator.throw?.(error) ?? { done: true as const, value: undefined };
+        },
+      };
+    };
+  return stream;
+}
+
+export function wrapStreamFnExtractDeepSeekInlineToolCalls(
+  baseFn: StreamFn,
+  allowedToolNames?: Set<string>,
+): StreamFn {
+  return (model, context, options) => {
+    const maybeStream = baseFn(model, context, options);
+    if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
+      return Promise.resolve(maybeStream).then((stream) =>
+        wrapStreamExtractDeepSeekInlineToolCalls(stream, allowedToolNames),
+      );
+    }
+    return wrapStreamExtractDeepSeekInlineToolCalls(maybeStream, allowedToolNames);
   };
 }
 
@@ -1376,6 +1837,21 @@ export async function runEmbeddedAttempt(
       if (isXaiProvider(params.provider, params.modelId)) {
         activeSession.agent.streamFn = wrapStreamFnDecodeXaiToolCallArguments(
           activeSession.agent.streamFn,
+        );
+      }
+
+      // DeepSeek on Azure AI Foundry sometimes emits tool calls as inline text
+      // (e.g. `exec{"command":"..."}`) instead of structured tool_calls.
+      // Extract them into proper tool call blocks so pi-agent-core can dispatch,
+      // and strip the raw text from streaming partials so the UI doesn't show it.
+      const deepSeekAzureMatch = isDeepSeekOnAzureFoundry(params.modelId, params.model.baseUrl);
+      log.info(
+        `DeepSeek inline extraction check: modelId=${params.modelId} baseUrl=${params.model.baseUrl} match=${deepSeekAzureMatch} allowedTools=[${[...allowedToolNames].join(",")}]`,
+      );
+      if (deepSeekAzureMatch) {
+        activeSession.agent.streamFn = wrapStreamFnExtractDeepSeekInlineToolCalls(
+          activeSession.agent.streamFn,
+          allowedToolNames,
         );
       }
 

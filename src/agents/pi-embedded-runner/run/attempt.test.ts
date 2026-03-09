@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveOllamaBaseUrlForRun } from "../../ollama-stream.js";
+import { isDeepSeekOnAzureFoundry } from "../model.js";
 import {
   buildAfterTurnLegacyCompactionParams,
   composeSystemPromptWithHookContext,
+  extractInlineToolCall,
   isOllamaCompatProvider,
   prependSystemPromptAddition,
   resolveAttemptFsWorkspaceOnly,
@@ -13,6 +15,7 @@ import {
   shouldInjectOllamaCompatNumCtx,
   decodeHtmlEntitiesInObject,
   wrapOllamaCompatNumCtx,
+  wrapStreamFnExtractDeepSeekInlineToolCalls,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.js";
 
@@ -734,5 +737,773 @@ describe("buildAfterTurnLegacyCompactionParams", () => {
       workspaceDir: "/tmp/workspace",
       agentDir: "/tmp/agent",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isDeepSeekOnAzureFoundry
+// ---------------------------------------------------------------------------
+describe("isDeepSeekOnAzureFoundry", () => {
+  it("returns true for DeepSeek model on Azure AI Foundry", () => {
+    expect(
+      isDeepSeekOnAzureFoundry(
+        "DeepSeek-R1-0528",
+        "https://my-project.services.ai.azure.com/openai/deployments/DeepSeek-R1-0528",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for deepseek-v3 on classic Azure OpenAI", () => {
+    expect(isDeepSeekOnAzureFoundry("deepseek-v3.2", "https://my-resource.openai.azure.com")).toBe(
+      true,
+    );
+  });
+
+  it("returns false for non-Azure base URL", () => {
+    expect(isDeepSeekOnAzureFoundry("deepseek-v3.2", "https://qianfan.baidubce.com/v2")).toBe(
+      false,
+    );
+  });
+
+  it("returns false for non-DeepSeek model on Azure", () => {
+    expect(
+      isDeepSeekOnAzureFoundry(
+        "gpt-4o",
+        "https://my-project.services.ai.azure.com/openai/deployments/gpt-4o",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when modelId is undefined", () => {
+    expect(isDeepSeekOnAzureFoundry(undefined, "https://my-project.services.ai.azure.com")).toBe(
+      false,
+    );
+  });
+
+  it("returns false when baseUrl is undefined", () => {
+    expect(isDeepSeekOnAzureFoundry("deepseek-v3.2", undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractInlineToolCall
+// ---------------------------------------------------------------------------
+describe("extractInlineToolCall", () => {
+  it("extracts a standalone inline tool call", () => {
+    const result = extractInlineToolCall(
+      'exec{"command": "curl -s http://example.com"}',
+      new Set(["exec"]),
+    );
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "curl -s http://example.com" },
+      precedingText: "",
+    });
+  });
+
+  it("extracts tool call with nested JSON", () => {
+    const result = extractInlineToolCall(
+      'read{"file_path": "/tmp/foo.txt", "options": {"encoding": "utf8"}}',
+      new Set(["read"]),
+    );
+    expect(result).toEqual({
+      name: "read",
+      arguments: { file_path: "/tmp/foo.txt", options: { encoding: "utf8" } },
+      precedingText: "",
+    });
+  });
+
+  it("handles surrounding whitespace", () => {
+    const result = extractInlineToolCall('  exec{"command": "ls"}  ', new Set(["exec"]));
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "ls" },
+      precedingText: "",
+    });
+  });
+
+  it("extracts tool call preceded by conversational text", () => {
+    const result = extractInlineToolCall(
+      'Let me check the state first.\n    exec{"command": "curl -s http://example.com"}',
+      new Set(["exec"]),
+    );
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "curl -s http://example.com" },
+      precedingText: "Let me check the state first.",
+    });
+  });
+
+  it("extracts tool call with multi-line preceding text", () => {
+    const input =
+      'Yes, let\'s try turning them on again with different parameters.\nFirst, check the state.\n    exec{"command": "curl -s http://ha/api/states/light.twinkly | jq ."}';
+    const result = extractInlineToolCall(input, new Set(["exec"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("exec");
+    expect(result!.precedingText).toBe(
+      "Yes, let's try turning them on again with different parameters.\nFirst, check the state.",
+    );
+  });
+
+  it("returns null for unknown tool names", () => {
+    expect(
+      extractInlineToolCall('unknownTool{"arg": "value"}', new Set(["exec", "read"])),
+    ).toBeNull();
+  });
+
+  it("extracts without allowedToolNames filter", () => {
+    const result = extractInlineToolCall('exec{"command": "ls"}');
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "ls" },
+      precedingText: "",
+    });
+  });
+
+  it("returns null for invalid JSON", () => {
+    expect(extractInlineToolCall("exec{not valid json}", new Set(["exec"]))).toBeNull();
+  });
+
+  it("returns null for plain text without tool call pattern", () => {
+    expect(
+      extractInlineToolCall("Let me check the lights for you and report back.", new Set(["exec"])),
+    ).toBeNull();
+  });
+
+  it("returns null for prose containing curly braces with unknown tool name", () => {
+    expect(
+      extractInlineToolCall(
+        'The config uses format{"key": "value"} for settings.',
+        new Set(["exec", "read"]),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for JSON arrays", () => {
+    expect(extractInlineToolCall("exec[1, 2, 3]", new Set(["exec"]))).toBeNull();
+  });
+
+  it("handles control characters around tool name (DeepSeek Azure quirk)", () => {
+    // DeepSeek on Azure Foundry inserts control chars like \u0017 (ETB) and \u0015 (NAK)
+    const input =
+      'The API is responding.\n\n        \u0017exec\u0015{"command": "curl -s http://example.com"}';
+    const result = extractInlineToolCall(input, new Set(["exec"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("exec");
+    expect(result!.arguments).toEqual({ command: "curl -s http://example.com" });
+    expect(result!.precedingText).toBe("The API is responding.");
+  });
+
+  it("extracts function-call style with parentheses: exec({...})", () => {
+    const input =
+      'Let me check the state.\n\n          exec({"command": "curl -s http://example.com"})';
+    const result = extractInlineToolCall(input, new Set(["exec"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("exec");
+    expect(result!.arguments).toEqual({ command: "curl -s http://example.com" });
+    expect(result!.precedingText).toBe("Let me check the state.");
+  });
+
+  it("extracts standalone function-call style: exec({...})", () => {
+    const result = extractInlineToolCall('exec({"command": "ls -la"})', new Set(["exec"]));
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "ls -la" },
+      precedingText: "",
+    });
+  });
+
+  // DeepSeek V3.2 standalone JSON patterns
+  it("extracts double-brace JSON with action field", () => {
+    const input =
+      'Let me search memory.\n\n{{"action": "memory_search", "query": "twinkly lights"}}';
+    const result = extractInlineToolCall(input, new Set(["memory_search", "exec"]));
+    expect(result).toEqual({
+      name: "memory_search",
+      arguments: { query: "twinkly lights" },
+      precedingText: "Let me search memory.",
+    });
+  });
+
+  it("extracts single-brace JSON with action field", () => {
+    const input = 'Checking.\n\n{"action": "exec", "command": "ls -la"}';
+    const result = extractInlineToolCall(input, new Set(["exec"]));
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "ls -la" },
+      precedingText: "Checking.",
+    });
+  });
+
+  it("extracts standalone JSON by unique argument key: command → exec", () => {
+    const input = 'Let me run that.\n\n{"command": "curl -s http://ha/api/states"}';
+    const result = extractInlineToolCall(input, new Set(["exec", "read"]));
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "curl -s http://ha/api/states" },
+      precedingText: "Let me run that.",
+    });
+  });
+
+  it("extracts standalone JSON by unique argument key: path → read", () => {
+    const input = 'Let me read the skill file.\n\n{"path": "~/.openclaw/skills/ha/SKILL.md"}';
+    const result = extractInlineToolCall(input, new Set(["exec", "read"]));
+    expect(result).toEqual({
+      name: "read",
+      arguments: { path: "~/.openclaw/skills/ha/SKILL.md" },
+      precedingText: "Let me read the skill file.",
+    });
+  });
+
+  it("returns null for standalone JSON with ambiguous keys (query)", () => {
+    const input = 'Searching.\n\n{"query": "twinkly lights"}';
+    // query is shared by memory_search and web_search — ambiguous
+    const result = extractInlineToolCall(input, new Set(["memory_search", "web_search"]));
+    expect(result).toBeNull();
+  });
+
+  it("extracts last JSON block when multiple are present", () => {
+    const input =
+      'Trying tool.\n{ "query": "lights" }\n\n{{"action": "memory_search", "query": "lights"}}';
+    const result = extractInlineToolCall(input, new Set(["memory_search"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("memory_search");
+    expect(result!.arguments).toEqual({ query: "lights" });
+  });
+
+  it("returns null for standalone JSON when tool not in allowed set", () => {
+    const input = '{"action": "memory_search", "query": "test"}';
+    const result = extractInlineToolCall(input, new Set(["exec"]));
+    expect(result).toBeNull();
+  });
+
+  it("extracts standalone JSON with no preceding text", () => {
+    const result = extractInlineToolCall('{"action": "exec", "command": "ls"}', new Set(["exec"]));
+    expect(result).toEqual({
+      name: "exec",
+      arguments: { command: "ls" },
+      precedingText: "",
+    });
+  });
+
+  it("extracts JSON tool call when garbled text follows the JSON block", () => {
+    // DeepSeek V3.2 sometimes outputs garbled/repeated text after the JSON tool call.
+    // The extraction must find the JSON block by matching braces, not by assuming
+    // the JSON extends to the end of the text.
+    const input =
+      "I'll follow the Home Assistant skill. First, let me read it to see how to query lights.\n\n" +
+      '{ "path": "~/.openclaw/skills/home-assistant/SKILL.md" }' +
+      "            I'll follow the Home Assistant skill. First, let me read it" +
+      '.": "~/.openclaw/skills/home-assistant/SKILL.md" }';
+    const result = extractInlineToolCall(input, new Set(["exec", "read", "web_search"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("read");
+    expect(result!.arguments).toEqual({ path: "~/.openclaw/skills/home-assistant/SKILL.md" });
+    expect(result!.precedingText).toBe(
+      "I'll follow the Home Assistant skill. First, let me read it to see how to query lights.",
+    );
+  });
+
+  it("extracts double-brace JSON when garbled text follows", () => {
+    const input =
+      'Searching memory.\n\n{{"action": "memory_search", "query": "lights"}}  some garbled text here}';
+    const result = extractInlineToolCall(input, new Set(["memory_search"]));
+    expect(result).not.toBeNull();
+    expect(result!.name).toBe("memory_search");
+    expect(result!.arguments).toEqual({ query: "lights" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapStreamFnExtractDeepSeekInlineToolCalls
+// ---------------------------------------------------------------------------
+describe("wrapStreamFnExtractDeepSeekInlineToolCalls", () => {
+  function createFakeStream(params: { events: unknown[]; resultMessage: unknown }): {
+    result: () => Promise<unknown>;
+    [Symbol.asyncIterator]: () => AsyncIterator<unknown>;
+  } {
+    return {
+      async result() {
+        return params.resultMessage;
+      },
+      [Symbol.asyncIterator]() {
+        return (async function* () {
+          for (const event of params.events) {
+            yield event;
+          }
+        })();
+      },
+    };
+  }
+
+  async function invokeWrappedStream(
+    baseFn: (...args: never[]) => unknown,
+    allowedToolNames?: Set<string>,
+  ) {
+    const wrappedFn = wrapStreamFnExtractDeepSeekInlineToolCalls(baseFn as never, allowedToolNames);
+    return await wrappedFn({} as never, {} as never, {} as never);
+  }
+
+  it("converts inline text tool call to structured tool call in result message", async () => {
+    const textBlock = { type: "text", text: 'exec{"command": "ls -la"}' };
+    const finalMessage = { role: "assistant", content: [textBlock] };
+    const baseFn = vi.fn(() => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("toolCall");
+    expect(result.content[0].name).toBe("exec");
+    expect(result.content[0].arguments).toEqual({ command: "ls -la" });
+    expect(result.content[0].id).toMatch(/^call_ds_inline_/);
+  });
+
+  it("converts inline tool call in streamed message events", async () => {
+    const textBlock = { type: "text", text: 'read{"file_path": "/tmp/test.txt"}' };
+    const event = {
+      type: "content_delta",
+      message: { role: "assistant", content: [textBlock] },
+    };
+    const finalMessage = { role: "assistant", content: [] };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["read"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    const eventMsg = (seenEvents[0] as { message: { content: Array<Record<string, unknown>> } })
+      .message;
+    expect(eventMsg.content).toHaveLength(1);
+    expect(eventMsg.content[0].type).toBe("toolCall");
+    expect(eventMsg.content[0].name).toBe("read");
+  });
+
+  it("preserves normal text blocks that are not tool calls", async () => {
+    const textBlock = { type: "text", text: "Let me help you with that." };
+    const finalMessage = { role: "assistant", content: [textBlock] };
+    const baseFn = vi.fn(() => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toBe("Let me help you with that.");
+  });
+
+  it("skips extraction when structured tool calls already exist", async () => {
+    const textBlock = { type: "text", text: 'exec{"command": "ls"}' };
+    const toolCallBlock = {
+      type: "toolCall",
+      id: "call_existing",
+      name: "read",
+      arguments: { file_path: "/tmp/foo" },
+    };
+    const finalMessage = { role: "assistant", content: [textBlock, toolCallBlock] };
+    const baseFn = vi.fn(() => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec", "read"]));
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+
+    // Should keep original content unchanged since structured tool calls exist
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[1].type).toBe("toolCall");
+  });
+
+  it("supports async stream functions that return a promise", async () => {
+    const textBlock = { type: "text", text: 'exec{"command": "whoami"}' };
+    const finalMessage = { role: "assistant", content: [textBlock] };
+    const baseFn = vi.fn(async () => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("toolCall");
+    expect(result.content[0].name).toBe("exec");
+  });
+
+  it("splits mixed text + inline tool call into text block + tool call block", async () => {
+    const textBlock = {
+      type: "text",
+      text: 'Let me check the state first.\n    exec{"command": "curl -s http://ha/api/states/light.twinkly | jq ."}',
+    };
+    const finalMessage = { role: "assistant", content: [textBlock] };
+    const baseFn = vi.fn(() => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toBe("Let me check the state first.");
+    expect(result.content[1].type).toBe("toolCall");
+    expect(result.content[1].name).toBe("exec");
+    expect(result.content[1].arguments).toEqual({
+      command: "curl -s http://ha/api/states/light.twinkly | jq .",
+    });
+  });
+
+  it("strips inline tool call text from partial events (control chars)", async () => {
+    const partialContent = [
+      { type: "text", text: 'Let me check.\n\n  \u0017exec\u0015{"command":' },
+    ];
+    const event = {
+      type: "text_delta",
+      partial: { role: "assistant", content: partialContent },
+    };
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: 'Let me check.\n\n  \u0017exec\u0015{"command": "ls"}' }],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    // Partial should have tool call text stripped (truncated at control char)
+    const partialMsg = (seenEvents[0] as { partial: { content: Array<{ text: string }> } }).partial;
+    expect(partialMsg.content[0].text).toBe("Let me check.");
+
+    // Final message should have proper tool call extraction
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[1].type).toBe("toolCall");
+  });
+
+  it("strips partial inline tool call text without control chars", async () => {
+    const partialContent = [{ type: "text", text: 'Checking now.\n  exec{"command": "ls -' }];
+    const event = {
+      type: "text_delta",
+      partial: { role: "assistant", content: partialContent },
+    };
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: 'Checking now.\n  exec{"command": "ls -la"}' }],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    // Partial should have tool call text stripped (truncated at tool name)
+    const partialMsg = (seenEvents[0] as { partial: { content: Array<{ text: string }> } }).partial;
+    expect(partialMsg.content[0].text).toBe("Checking now.");
+  });
+
+  it("does not strip partial text when no tool name matches", async () => {
+    const partialContent = [{ type: "text", text: 'Here is some code: config{"key": "value' }];
+    const event = {
+      type: "text_delta",
+      partial: { role: "assistant", content: partialContent },
+    };
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: 'Here is some code: config{"key": "value"}' }],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    // Partial should be preserved since "config" is not in allowedToolNames
+    const partialMsg = (seenEvents[0] as { partial: { content: Array<{ text: string }> } }).partial;
+    expect(partialMsg.content[0].text).toBe('Here is some code: config{"key": "value');
+  });
+
+  it("strips standalone JSON partial with action key", async () => {
+    const partialContent = [
+      { type: "text", text: 'Let me search.\n\n{{"action": "memory_search", "query": "twi' },
+    ];
+    const event = {
+      type: "text_delta",
+      partial: { role: "assistant", content: partialContent },
+    };
+    const finalMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: 'Let me search.\n\n{{"action": "memory_search", "query": "twinkly lights"}}',
+        },
+      ],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["memory_search"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    const partialMsg = (seenEvents[0] as { partial: { content: Array<{ text: string }> } }).partial;
+    expect(partialMsg.content[0].text).toBe("Let me search.");
+  });
+
+  it("strips standalone JSON partial with command key", async () => {
+    const partialContent = [{ type: "text", text: 'Running command.\n\n{"command": "curl -s' }];
+    const event = {
+      type: "text_delta",
+      partial: { role: "assistant", content: partialContent },
+    };
+    const finalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: 'Running command.\n\n{"command": "curl -s http://ha/api"}' }],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [event], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+
+    const seenEvents: unknown[] = [];
+    for await (const item of stream) {
+      seenEvents.push(item);
+    }
+
+    const partialMsg = (seenEvents[0] as { partial: { content: Array<{ text: string }> } }).partial;
+    expect(partialMsg.content[0].text).toBe("Running command.");
+  });
+
+  it("extracts double-brace tool call from final message", async () => {
+    const finalMessage = {
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: 'Let me search.\n\n{{"action": "memory_search", "query": "twinkly lights"}}',
+        },
+      ],
+    };
+    const baseFn = vi.fn(() => createFakeStream({ events: [], resultMessage: finalMessage }));
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["memory_search"]));
+
+    // Drain the iterator
+    for await (const _ of stream) {
+      /* noop */
+    }
+
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect((result.content[0] as { text: string }).text).toBe("Let me search.");
+    expect(result.content[1].type).toBe("toolCall");
+    expect(result.content[1].name).toBe("memory_search");
+    expect(result.content[1].arguments).toEqual({ query: "twinkly lights" });
+  });
+
+  it("does not corrupt shared output when stripping partial tool call text", async () => {
+    // streamSimple reuses a single output object for both partial and done events.
+    // Stripping partial text must not mutate the original, or the final extraction
+    // will find stripped text and fail to extract the tool call.
+    const sharedTextBlock = { type: "text" as const, text: "Checking." };
+    const sharedOutput = { role: "assistant", content: [sharedTextBlock] };
+
+    const baseFn = vi.fn(() => {
+      let eventIndex = 0;
+      return {
+        async result() {
+          return sharedOutput;
+        },
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (eventIndex === 0) {
+                sharedTextBlock.text = 'Checking.\nexec{"command": "ls -';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              if (eventIndex === 1) {
+                sharedTextBlock.text = 'Checking.\nexec{"command": "ls -la"}';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              return { done: true, value: undefined };
+            },
+            async return() {
+              return { done: true as const, value: undefined };
+            },
+            async throw() {
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+    });
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["exec"]));
+
+    const seenPartialTexts: string[] = [];
+    for await (const item of stream) {
+      const evt = item as { partial?: { content: Array<{ text: string }> } };
+      if (evt.partial) {
+        seenPartialTexts.push(evt.partial.content[0].text);
+      }
+    }
+
+    // Partials should have tool call text stripped for UI.
+    // Both partials strip from the tool name (exec) since it's in allowedToolNames.
+    expect(seenPartialTexts[0]).toBe("Checking.");
+    expect(seenPartialTexts[1]).toBe("Checking.");
+
+    // Original shared output must retain full text so extraction works
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[1].type).toBe("toolCall");
+    expect(result.content[1].name).toBe("exec");
+    expect(result.content[1].arguments).toEqual({ command: "ls -la" });
+  });
+
+  it("does not corrupt shared output when stripping standalone JSON partial", async () => {
+    const sharedTextBlock = { type: "text" as const, text: "Searching." };
+    const sharedOutput = { role: "assistant", content: [sharedTextBlock] };
+
+    const baseFn = vi.fn(() => {
+      let eventIndex = 0;
+      return {
+        async result() {
+          return sharedOutput;
+        },
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (eventIndex === 0) {
+                sharedTextBlock.text = 'Searching.\n\n{"path": "~/.openclaw/skills/ha/SKILL.md';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              if (eventIndex === 1) {
+                sharedTextBlock.text = 'Searching.\n\n{"path": "~/.openclaw/skills/ha/SKILL.md"}';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              return { done: true, value: undefined };
+            },
+            async return() {
+              return { done: true as const, value: undefined };
+            },
+            async throw() {
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+    });
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["read"]));
+    for await (const _ of stream) {
+      /* drain */
+    }
+
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[1].type).toBe("toolCall");
+    expect(result.content[1].name).toBe("read");
+    expect(result.content[1].arguments).toEqual({
+      path: "~/.openclaw/skills/ha/SKILL.md",
+    });
+  });
+
+  it("strips code-fenced tool calls including the fence during streaming", async () => {
+    const sharedTextBlock = { type: "text" as const, text: "Reading." };
+    const sharedOutput = { role: "assistant", content: [sharedTextBlock] };
+
+    const baseFn = vi.fn(() => {
+      let eventIndex = 0;
+      return {
+        async result() {
+          return sharedOutput;
+        },
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (eventIndex === 0) {
+                sharedTextBlock.text =
+                  'Reading.\n\n```json\n{"action": "read", "file_path": "/tmp/f';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              if (eventIndex === 1) {
+                sharedTextBlock.text =
+                  'Reading.\n\n```json\n{"action": "read", "file_path": "/tmp/foo.txt"}\n```';
+                eventIndex++;
+                return { done: false, value: { type: "text_delta", partial: sharedOutput } };
+              }
+              return { done: true, value: undefined };
+            },
+            async return() {
+              return { done: true as const, value: undefined };
+            },
+            async throw() {
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      };
+    });
+
+    const stream = await invokeWrappedStream(baseFn, new Set(["read"]));
+
+    const seenPartialTexts: string[] = [];
+    for await (const item of stream) {
+      const evt = item as { partial?: { content: Array<{ text: string }> } };
+      if (evt.partial) {
+        seenPartialTexts.push(evt.partial.content[0].text);
+      }
+    }
+
+    // Both partials should strip the code fence + JSON entirely.
+    expect(seenPartialTexts[0]).toBe("Reading.");
+    expect(seenPartialTexts[1]).toBe("Reading.");
+
+    // Extraction should still produce a toolCall from the unmodified original.
+    const result = (await stream.result()) as unknown as {
+      content: Array<Record<string, unknown>>;
+    };
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0].type).toBe("text");
+    // precedingText should also have the code fence stripped
+    expect(result.content[0].text).toBe("Reading.");
+    expect(result.content[1].type).toBe("toolCall");
+    expect(result.content[1].name).toBe("read");
+    expect(result.content[1].arguments).toEqual({ file_path: "/tmp/foo.txt" });
   });
 });

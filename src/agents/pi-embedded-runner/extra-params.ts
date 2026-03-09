@@ -246,21 +246,51 @@ function isOpenAIPublicApiBaseUrl(baseUrl: unknown): boolean {
   }
 }
 
+/** Matches all Azure AI hostname patterns (Foundry, Cognitive Services, Azure OpenAI). */
+function isAzureResponsesBaseUrl(baseUrl: unknown): boolean {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) {
+    return false;
+  }
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return (
+      host.endsWith(".openai.azure.com") ||
+      host.endsWith(".services.ai.azure.com") ||
+      host.endsWith(".cognitiveservices.azure.com")
+    );
+  } catch {
+    const normalized = baseUrl.toLowerCase();
+    return (
+      normalized.includes(".openai.azure.com") ||
+      normalized.includes(".services.ai.azure.com") ||
+      normalized.includes(".cognitiveservices.azure.com")
+    );
+  }
+}
+
 function shouldForceResponsesStore(model: {
   api?: unknown;
   provider?: unknown;
   baseUrl?: unknown;
   compat?: { supportsStore?: boolean };
 }): boolean {
-  // Never force store=true when the model explicitly declares supportsStore=false
-  // (e.g. Azure OpenAI Responses API without server-side persistence).
+  // Never force store=true when the model explicitly declares supportsStore=false.
   if (model.compat?.supportsStore === false) {
     return false;
   }
-  if (typeof model.api !== "string" || typeof model.provider !== "string") {
+  if (typeof model.api !== "string") {
     return false;
   }
   if (!OPENAI_RESPONSES_APIS.has(model.api)) {
+    return false;
+  }
+  // Azure endpoints always support store=true for the Responses API,
+  // regardless of provider name (azure-gpt, azure-foundry, etc.).
+  if (isAzureResponsesBaseUrl(model.baseUrl)) {
+    return true;
+  }
+  // Non-Azure: require known provider + direct OpenAI URL.
+  if (typeof model.provider !== "string") {
     return false;
   }
   if (!OPENAI_RESPONSES_PROVIDERS.has(model.provider)) {

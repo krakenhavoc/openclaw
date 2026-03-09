@@ -232,6 +232,14 @@ type VllmModelsResponse = {
   }>;
 };
 
+type AzureDeploymentEntry = { id?: string; model?: string; status?: string };
+type AzureDeploymentsResponse = { data?: AzureDeploymentEntry[] };
+const AZURE_DEPLOYMENTS_API_VERSION = "2024-10-21";
+const AZURE_DISCOVERY_TIMEOUT_MS = 10_000;
+const AZURE_DEFAULT_CONTEXT_WINDOW = 128_000;
+const AZURE_DEFAULT_MAX_TOKENS = 16_384;
+const AZURE_DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
 /**
  * Derive the Ollama native API base URL from a configured base URL.
  *
@@ -391,6 +399,91 @@ async function discoverVllmModels(
       });
   } catch (error) {
     log.warn(`Failed to discover vLLM models: ${String(error)}`);
+    return [];
+  }
+}
+
+/**
+ * Detect Azure AI Foundry or classic Azure OpenAI base URLs.
+ * Matches `*.services.ai.azure.com`, `*.openai.azure.com`, and
+ * `*.cognitiveservices.azure.com`.
+ */
+function isAzureUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    const host = url.hostname.toLowerCase();
+    return (
+      host.endsWith(".services.ai.azure.com") ||
+      host.endsWith(".openai.azure.com") ||
+      host.endsWith(".cognitiveservices.azure.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function discoverAzureDeployments(
+  baseUrl: string,
+  apiKey?: string,
+): Promise<ModelDefinitionConfig[]> {
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return [];
+  }
+
+  const trimmedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  const url = `${trimmedBaseUrl}/openai/deployments?api-version=${AZURE_DEPLOYMENTS_API_VERSION}`;
+
+  try {
+    const trimmedApiKey = apiKey?.trim();
+    const headers: Record<string, string> = {};
+    if (trimmedApiKey) {
+      headers["api-key"] = trimmedApiKey;
+    }
+
+    const response = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(AZURE_DISCOVERY_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      log.warn(`Failed to discover Azure deployments: ${response.status}`);
+      return [];
+    }
+
+    const data = (await response.json()) as AzureDeploymentsResponse;
+    const deployments = data.data ?? [];
+    if (deployments.length === 0) {
+      log.debug("No Azure deployments found");
+      return [];
+    }
+
+    return deployments
+      .filter((d) => {
+        const status = typeof d.status === "string" ? d.status.toLowerCase() : "";
+        return status === "succeeded";
+      })
+      .map((d) => {
+        const deploymentId = typeof d.id === "string" ? d.id.trim() : "";
+        const modelName = typeof d.model === "string" ? d.model.trim() : deploymentId;
+        return { deploymentId, modelName };
+      })
+      .filter((d) => Boolean(d.deploymentId))
+      .map((d) => {
+        const lower = d.modelName.toLowerCase();
+        const isReasoning = lower.includes("o1") || lower.includes("o3") || lower.includes("o4");
+        const supportsImage = lower.includes("gpt-4o") || lower.includes("gpt-4-vision");
+        return {
+          id: d.deploymentId,
+          name: `${d.modelName} (${d.deploymentId})`,
+          reasoning: isReasoning,
+          input: supportsImage ? (["text", "image"] as const) : (["text"] as const),
+          cost: AZURE_DEFAULT_COST,
+          contextWindow: AZURE_DEFAULT_CONTEXT_WINDOW,
+          maxTokens: AZURE_DEFAULT_MAX_TOKENS,
+        } satisfies ModelDefinitionConfig;
+      });
+  } catch (error) {
+    log.warn(`Failed to discover Azure deployments: ${String(error)}`);
     return [];
   }
 }
@@ -1290,6 +1383,35 @@ export async function resolveImplicitProviders(params: {
       providers.vllm = {
         ...(await buildVllmProvider({ apiKey: discoveryApiKey })),
         apiKey: vllmKey,
+      };
+    }
+  }
+
+  // Azure Foundry / Azure OpenAI - auto-discover deployments for explicit
+  // providers with Azure base URLs and an empty models array.
+  for (const [providerKey, explicitProvider] of Object.entries(params.explicitProviders ?? {})) {
+    if (!explicitProvider?.baseUrl || !isAzureUrl(explicitProvider.baseUrl)) {
+      continue;
+    }
+    const hasAzureExplicitModels =
+      Array.isArray(explicitProvider.models) && explicitProvider.models.length > 0;
+    if (hasAzureExplicitModels) {
+      continue;
+    }
+    if (providers[providerKey]) {
+      continue;
+    }
+    const resolvedApiKey =
+      resolveProviderApiKey(providerKey).discoveryApiKey ??
+      toDiscoveryApiKey(
+        typeof explicitProvider.apiKey === "string" ? explicitProvider.apiKey : undefined,
+      );
+    const models = await discoverAzureDeployments(explicitProvider.baseUrl, resolvedApiKey);
+    if (models.length > 0) {
+      providers[providerKey] = {
+        baseUrl: explicitProvider.baseUrl,
+        api: explicitProvider.api ?? "openai-completions",
+        models,
       };
     }
   }

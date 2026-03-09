@@ -11,6 +11,117 @@ import { resolveForwardCompatModel } from "../model-forward-compat.js";
 import { findNormalizedProviderValue, normalizeProviderId } from "../model-selection.js";
 import { discoverAuthStorage, discoverModels } from "../pi-model-discovery.js";
 
+/** Default Azure API version for Chat Completions (matches Azure AI Inference). */
+const AZURE_RUNTIME_API_VERSION = "2024-10-21";
+/** Azure API version for the Responses API endpoint. */
+const AZURE_RESPONSES_API_VERSION = "2025-04-01-preview";
+
+/**
+ * Detect DeepSeek models hosted on Azure AI Foundry.
+ * DeepSeek on Azure sometimes emits tool calls as inline text
+ * (e.g. `exec{"command":"..."}`) instead of structured tool_calls.
+ */
+export function isDeepSeekOnAzureFoundry(
+  modelId: string | undefined,
+  baseUrl: string | undefined,
+): boolean {
+  if (!modelId || !baseUrl) {
+    return false;
+  }
+  return isAzureHostname(baseUrl) && modelId.toLowerCase().includes("deepseek");
+}
+
+function isAzureHostname(baseUrl: string | undefined): boolean {
+  if (!baseUrl) {
+    return false;
+  }
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return (
+      host.endsWith(".services.ai.azure.com") ||
+      host.endsWith(".openai.azure.com") ||
+      host.endsWith(".cognitiveservices.azure.com")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Transform Azure AI Foundry / Azure OpenAI base URLs to include the
+ * deployment path required by the Azure API. At runtime, the pi-ai library
+ * appends `/chat/completions` to the baseUrl, so we need the deployment
+ * path baked in: `{baseUrl}/openai/deployments/{modelId}`.
+ */
+function resolveAzureBaseUrl(baseUrl: string | undefined, modelId: string): string | undefined {
+  if (!baseUrl || !isAzureHostname(baseUrl)) {
+    return baseUrl;
+  }
+  const normalized = baseUrl.replace(/\/+$/, "");
+  if (normalized.includes("/openai/deployments/")) {
+    return normalized;
+  }
+  // If the URL already has a path (e.g. /openai for Responses API),
+  // don't append the deployment segment — model is in the request body.
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.pathname !== "/" && parsed.pathname !== "") {
+      return normalized;
+    }
+  } catch {
+    // fall through
+  }
+  return `${normalized}/openai/deployments/${modelId}`;
+}
+
+/**
+ * Install a one-time global fetch interceptor that adds the `api-version`
+ * query parameter to Azure AI requests. The pi-ai library uses the standard
+ * OpenAI SDK (`new OpenAI()`) for `openai-completions` which does not inject
+ * `api-version` (only `AzureOpenAI` does). Without it Azure returns errors.
+ */
+let azureFetchInterceptorInstalled = false;
+function ensureAzureFetchInterceptor(): void {
+  if (azureFetchInterceptorInstalled) {
+    return;
+  }
+  azureFetchInterceptorInstalled = true;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const urlStr =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!isAzureHostname(urlStr)) {
+      return originalFetch(input, init);
+    }
+    const url = new URL(urlStr);
+    if (!url.searchParams.has("api-version")) {
+      const version = url.pathname.endsWith("/responses")
+        ? AZURE_RESPONSES_API_VERSION
+        : AZURE_RUNTIME_API_VERSION;
+      url.searchParams.set("api-version", version);
+    }
+    return originalFetch(url.toString(), init);
+  }) as typeof fetch;
+}
+
+/**
+ * Build Azure-specific headers (`api-key`) from the provider config.
+ * Azure endpoints expect the `api-key` header for authentication rather than
+ * the standard `Authorization: Bearer <key>` that the OpenAI SDK sends.
+ */
+function resolveAzureHeaders(
+  providerConfig: InlineProviderConfig | undefined,
+): Record<string, string> | undefined {
+  const apiKey =
+    typeof (providerConfig as Record<string, unknown> | undefined)?.apiKey === "string"
+      ? ((providerConfig as Record<string, unknown>).apiKey as string).trim()
+      : undefined;
+  if (!apiKey) {
+    return undefined;
+  }
+  return { "api-key": apiKey };
+}
+
 type InlineModelEntry = ModelDefinitionConfig & {
   provider: string;
   baseUrl?: string;
@@ -79,27 +190,36 @@ function applyConfiguredProviderOverrides(params: {
   });
   const providerHeaders = sanitizeModelHeaders(providerConfig.headers);
   const configuredHeaders = sanitizeModelHeaders(configuredModel?.headers);
+  const isAzure = isAzureHostname(providerConfig.baseUrl);
+  const azureHeaders = isAzure ? resolveAzureHeaders(providerConfig) : undefined;
+  if (isAzure) {
+    ensureAzureFetchInterceptor();
+  }
   if (!configuredModel && !providerConfig.baseUrl && !providerConfig.api && !providerHeaders) {
     return {
       ...discoveredModel,
-      headers: discoveredHeaders,
+      headers: azureHeaders ? { ...discoveredHeaders, ...azureHeaders } : discoveredHeaders,
     };
   }
   return {
     ...discoveredModel,
     api: configuredModel?.api ?? providerConfig.api ?? discoveredModel.api,
-    baseUrl: providerConfig.baseUrl ?? discoveredModel.baseUrl,
+    baseUrl:
+      resolveAzureBaseUrl(providerConfig.baseUrl, modelId) ??
+      providerConfig.baseUrl ??
+      discoveredModel.baseUrl,
     reasoning: configuredModel?.reasoning ?? discoveredModel.reasoning,
     input: configuredModel?.input ?? discoveredModel.input,
     cost: configuredModel?.cost ?? discoveredModel.cost,
     contextWindow: configuredModel?.contextWindow ?? discoveredModel.contextWindow,
     maxTokens: configuredModel?.maxTokens ?? discoveredModel.maxTokens,
     headers:
-      discoveredHeaders || providerHeaders || configuredHeaders
+      discoveredHeaders || providerHeaders || configuredHeaders || azureHeaders
         ? {
             ...discoveredHeaders,
             ...providerHeaders,
             ...configuredHeaders,
+            ...azureHeaders,
           }
         : undefined,
     compat: configuredModel?.compat ?? discoveredModel.compat,
@@ -199,12 +319,17 @@ export function resolveModelWithRegistry(params: {
   const providerHeaders = sanitizeModelHeaders(providerConfig?.headers);
   const modelHeaders = sanitizeModelHeaders(configuredModel?.headers);
   if (providerConfig || modelId.startsWith("mock-")) {
+    const isAzureFallback = isAzureHostname(providerConfig?.baseUrl);
+    const azureFallbackHeaders = isAzureFallback ? resolveAzureHeaders(providerConfig) : undefined;
+    if (isAzureFallback) {
+      ensureAzureFetchInterceptor();
+    }
     return normalizeModelCompat({
       id: modelId,
       name: modelId,
       api: providerConfig?.api ?? "openai-responses",
       provider,
-      baseUrl: providerConfig?.baseUrl,
+      baseUrl: resolveAzureBaseUrl(providerConfig?.baseUrl, modelId) ?? providerConfig?.baseUrl,
       reasoning: configuredModel?.reasoning ?? false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -217,7 +342,9 @@ export function resolveModelWithRegistry(params: {
         providerConfig?.models?.[0]?.maxTokens ??
         DEFAULT_CONTEXT_TOKENS,
       headers:
-        providerHeaders || modelHeaders ? { ...providerHeaders, ...modelHeaders } : undefined,
+        providerHeaders || modelHeaders || azureFallbackHeaders
+          ? { ...providerHeaders, ...modelHeaders, ...azureFallbackHeaders }
+          : undefined,
     } as Model<Api>);
   }
 
