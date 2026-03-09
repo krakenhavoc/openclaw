@@ -68,7 +68,6 @@ function shouldForceResponsesStore(model: {
   baseUrl?: unknown;
   compat?: { supportsStore?: boolean };
 }): boolean {
-  // Never force store=true when the model explicitly declares supportsStore=false.
   if (model.compat?.supportsStore === false) {
     return false;
   }
