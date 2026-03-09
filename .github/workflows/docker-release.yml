@@ -3,7 +3,7 @@ name: Docker Release
 on:
   push:
     branches:
-      - main
+      - fork
     tags:
       - "v*"
     paths-ignore:
@@ -54,9 +54,9 @@ jobs:
           set -euo pipefail
           tags=()
           slim_tags=()
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            tags+=("${IMAGE}:main-amd64")
-            slim_tags+=("${IMAGE}:main-slim-amd64")
+          if [[ "${GITHUB_REF}" == "refs/heads/fork" ]]; then
+            tags+=("${IMAGE}:fork-amd64")
+            slim_tags+=("${IMAGE}:fork-slim-amd64")
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             version="${GITHUB_REF#refs/tags/v}"
@@ -84,8 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_SHA}"
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            version="main"
+          if [[ "${GITHUB_REF}" == "refs/heads/fork" ]]; then
+            version="fork"
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             version="${GITHUB_REF#refs/tags/v}"
@@ -155,9 +155,9 @@ jobs:
           set -euo pipefail
           tags=()
           slim_tags=()
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            tags+=("${IMAGE}:main-arm64")
-            slim_tags+=("${IMAGE}:main-slim-arm64")
+          if [[ "${GITHUB_REF}" == "refs/heads/fork" ]]; then
+            tags+=("${IMAGE}:fork-arm64")
+            slim_tags+=("${IMAGE}:fork-slim-arm64")
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             version="${GITHUB_REF#refs/tags/v}"
@@ -185,8 +185,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_SHA}"
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            version="main"
+          if [[ "${GITHUB_REF}" == "refs/heads/fork" ]]; then
+            version="fork"
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             version="${GITHUB_REF#refs/tags/v}"
@@ -251,9 +251,9 @@ jobs:
           set -euo pipefail
           tags=()
           slim_tags=()
-          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            tags+=("${IMAGE}:main")
-            slim_tags+=("${IMAGE}:main-slim")
+          if [[ "${GITHUB_REF}" == "refs/heads/fork" ]]; then
+            tags+=("${IMAGE}:fork")
+            slim_tags+=("${IMAGE}:fork-slim")
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             version="${GITHUB_REF#refs/tags/v}"
