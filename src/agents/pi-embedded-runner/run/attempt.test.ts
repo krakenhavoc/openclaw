@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "../../../config/config.js";
 import { resolveOllamaBaseUrlForRun } from "../../ollama-stream.js";
 import { isDeepSeekOnAzureFoundry } from "../model.js";
 import {
-  buildAfterTurnLegacyCompactionParams,
+  buildAfterTurnRuntimeContext,
   composeSystemPromptWithHookContext,
   extractInlineToolCall,
   isOllamaCompatProvider,
@@ -138,9 +138,15 @@ describe("resolvePromptModeForSession", () => {
     expect(resolvePromptModeForSession("agent:main:subagent:child")).toBe("minimal");
   });
 
-  it("uses full mode for cron sessions", () => {
-    expect(resolvePromptModeForSession("agent:main:cron:job-1")).toBe("full");
-    expect(resolvePromptModeForSession("agent:main:cron:job-1:run:run-abc")).toBe("full");
+  it("uses minimal mode for cron sessions", () => {
+    expect(resolvePromptModeForSession("agent:main:cron:job-1")).toBe("minimal");
+    expect(resolvePromptModeForSession("agent:main:cron:job-1:run:run-abc")).toBe("minimal");
+  });
+
+  it("uses full mode for regular and undefined sessions", () => {
+    expect(resolvePromptModeForSession(undefined)).toBe("full");
+    expect(resolvePromptModeForSession("agent:main")).toBe("full");
+    expect(resolvePromptModeForSession("agent:main:thread:abc")).toBe("full");
   });
 });
 
@@ -517,7 +523,7 @@ describe("wrapOllamaCompatNumCtx", () => {
     let payloadSeen: Record<string, unknown> | undefined;
     const baseFn = vi.fn((_model, _context, options) => {
       const payload: Record<string, unknown> = { options: { temperature: 0.1 } };
-      options?.onPayload?.(payload);
+      options?.onPayload?.(payload, _model);
       payloadSeen = payload;
       return {} as never;
     });
@@ -641,9 +647,9 @@ describe("prependSystemPromptAddition", () => {
   });
 });
 
-describe("buildAfterTurnLegacyCompactionParams", () => {
+describe("buildAfterTurnRuntimeContext", () => {
   it("uses primary model when compaction.model is not set", () => {
-    const legacy = buildAfterTurnLegacyCompactionParams({
+    const legacy = buildAfterTurnRuntimeContext({
       attempt: {
         sessionKey: "agent:main:session:abc",
         messageChannel: "slack",
@@ -671,7 +677,7 @@ describe("buildAfterTurnLegacyCompactionParams", () => {
   });
 
   it("passes primary model through even when compaction.model is set (override resolved in compactDirect)", () => {
-    const legacy = buildAfterTurnLegacyCompactionParams({
+    const legacy = buildAfterTurnRuntimeContext({
       attempt: {
         sessionKey: "agent:main:session:abc",
         messageChannel: "slack",
@@ -707,9 +713,8 @@ describe("buildAfterTurnLegacyCompactionParams", () => {
       model: "gpt-5.3-codex",
     });
   });
-
   it("includes resolved auth profile fields for context-engine afterTurn compaction", () => {
-    const legacy = buildAfterTurnLegacyCompactionParams({
+    const legacy = buildAfterTurnRuntimeContext({
       attempt: {
         sessionKey: "agent:main:session:abc",
         messageChannel: "slack",

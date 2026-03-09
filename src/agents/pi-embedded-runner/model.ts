@@ -6,10 +6,10 @@ import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { buildModelAliasLines } from "../model-alias-lines.js";
 import { isSecretRefHeaderValueMarker } from "../model-auth-markers.js";
-import { normalizeModelCompat } from "../model-compat.js";
 import { resolveForwardCompatModel } from "../model-forward-compat.js";
 import { findNormalizedProviderValue, normalizeProviderId } from "../model-selection.js";
 import { discoverAuthStorage, discoverModels } from "../pi-model-discovery.js";
+import { normalizeResolvedProviderModel } from "./model.provider-normalization.js";
 
 /** Default Azure API version for Chat Completions (matches Azure AI Inference). */
 const AZURE_RUNTIME_API_VERSION = "2024-10-21";
@@ -154,6 +154,10 @@ function sanitizeModelHeaders(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+function normalizeResolvedModel(params: { provider: string; model: Model<Api> }): Model<Api> {
+  return normalizeResolvedProviderModel(params);
+}
+
 export { buildModelAliasLines };
 
 function resolveConfiguredProviderConfig(
@@ -265,13 +269,14 @@ export function resolveModelWithRegistry(params: {
   const model = modelRegistry.find(provider, modelId) as Model<Api> | null;
 
   if (model) {
-    return normalizeModelCompat(
-      applyConfiguredProviderOverrides({
+    return normalizeResolvedModel({
+      provider,
+      model: applyConfiguredProviderOverrides({
         discoveredModel: model,
         providerConfig,
         modelId,
       }),
-    );
+    });
   }
 
   const providers = cfg?.models?.providers ?? {};
@@ -281,38 +286,42 @@ export function resolveModelWithRegistry(params: {
     (entry) => normalizeProviderId(entry.provider) === normalizedProvider && entry.id === modelId,
   );
   if (inlineMatch?.api) {
-    return normalizeModelCompat(inlineMatch as Model<Api>);
+    return normalizeResolvedModel({ provider, model: inlineMatch as Model<Api> });
   }
 
   // Forward-compat fallbacks must be checked BEFORE the generic providerCfg fallback.
   // Otherwise, configured providers can default to a generic API and break specific transports.
   const forwardCompat = resolveForwardCompatModel(provider, modelId, modelRegistry);
   if (forwardCompat) {
-    return normalizeModelCompat(
-      applyConfiguredProviderOverrides({
+    return normalizeResolvedModel({
+      provider,
+      model: applyConfiguredProviderOverrides({
         discoveredModel: forwardCompat,
         providerConfig,
         modelId,
       }),
-    );
+    });
   }
 
   // OpenRouter is a pass-through proxy - any model ID available on OpenRouter
   // should work without being pre-registered in the local catalog.
   if (normalizedProvider === "openrouter") {
-    return normalizeModelCompat({
-      id: modelId,
-      name: modelId,
-      api: "openai-completions",
+    return normalizeResolvedModel({
       provider,
-      baseUrl: "https://openrouter.ai/api/v1",
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: DEFAULT_CONTEXT_TOKENS,
-      // Align with OPENROUTER_DEFAULT_MAX_TOKENS in models-config.providers.ts
-      maxTokens: 8192,
-    } as Model<Api>);
+      model: {
+        id: modelId,
+        name: modelId,
+        api: "openai-completions",
+        provider,
+        baseUrl: "https://openrouter.ai/api/v1",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: DEFAULT_CONTEXT_TOKENS,
+        // Align with OPENROUTER_DEFAULT_MAX_TOKENS in models-config.providers.ts
+        maxTokens: 8192,
+      } as Model<Api>,
+    });
   }
 
   const configuredModel = providerConfig?.models?.find((candidate) => candidate.id === modelId);
@@ -324,28 +333,31 @@ export function resolveModelWithRegistry(params: {
     if (isAzureFallback) {
       ensureAzureFetchInterceptor();
     }
-    return normalizeModelCompat({
-      id: modelId,
-      name: modelId,
-      api: providerConfig?.api ?? "openai-responses",
+    return normalizeResolvedModel({
       provider,
-      baseUrl: resolveAzureBaseUrl(providerConfig?.baseUrl, modelId) ?? providerConfig?.baseUrl,
-      reasoning: configuredModel?.reasoning ?? false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow:
-        configuredModel?.contextWindow ??
-        providerConfig?.models?.[0]?.contextWindow ??
-        DEFAULT_CONTEXT_TOKENS,
-      maxTokens:
-        configuredModel?.maxTokens ??
-        providerConfig?.models?.[0]?.maxTokens ??
-        DEFAULT_CONTEXT_TOKENS,
-      headers:
-        providerHeaders || modelHeaders || azureFallbackHeaders
-          ? { ...providerHeaders, ...modelHeaders, ...azureFallbackHeaders }
-          : undefined,
-    } as Model<Api>);
+      model: {
+        id: modelId,
+        name: modelId,
+        api: providerConfig?.api ?? "openai-responses",
+        provider,
+        baseUrl: resolveAzureBaseUrl(providerConfig?.baseUrl, modelId) ?? providerConfig?.baseUrl,
+        reasoning: configuredModel?.reasoning ?? false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow:
+          configuredModel?.contextWindow ??
+          providerConfig?.models?.[0]?.contextWindow ??
+          DEFAULT_CONTEXT_TOKENS,
+        maxTokens:
+          configuredModel?.maxTokens ??
+          providerConfig?.models?.[0]?.maxTokens ??
+          DEFAULT_CONTEXT_TOKENS,
+        headers:
+          providerHeaders || modelHeaders || azureFallbackHeaders
+            ? { ...providerHeaders, ...modelHeaders, ...azureFallbackHeaders }
+            : undefined,
+      } as Model<Api>,
+    });
   }
 
   return undefined;
