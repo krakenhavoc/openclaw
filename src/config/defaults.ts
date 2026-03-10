@@ -40,7 +40,41 @@ const DEFAULT_MODEL_COST: ModelDefinitionConfig["cost"] = {
   cacheWrite: 0,
 };
 const DEFAULT_MODEL_INPUT: ModelDefinitionConfig["input"] = ["text"];
+const IMAGE_CAPABLE_MODEL_INPUT: ModelDefinitionConfig["input"] = ["text", "image"];
 const DEFAULT_MODEL_MAX_TOKENS = 8192;
+
+/**
+ * Infer image input capability from a model ID when the user hasn't
+ * explicitly configured `input`.  Covers well-known model families that
+ * support vision (GPT-4o/4-vision/5+, Claude 3+, Gemini, etc.).
+ */
+export function inferModelInput(modelId: string): ModelDefinitionConfig["input"] {
+  const lower = modelId.toLowerCase();
+  // OpenAI GPT vision models
+  if (
+    lower.includes("gpt-4o") ||
+    lower.includes("gpt-4-vision") ||
+    lower.includes("gpt-5") ||
+    lower.includes("gpt-4.1") ||
+    lower.includes("gpt-4.5")
+  ) {
+    return [...IMAGE_CAPABLE_MODEL_INPUT];
+  }
+  // Anthropic Claude 3+ (sonnet, opus, haiku)
+  if (
+    lower.includes("claude-3") ||
+    lower.includes("claude-sonnet") ||
+    lower.includes("claude-opus") ||
+    lower.includes("claude-haiku")
+  ) {
+    return [...IMAGE_CAPABLE_MODEL_INPUT];
+  }
+  // Google Gemini
+  if (lower.includes("gemini")) {
+    return [...IMAGE_CAPABLE_MODEL_INPUT];
+  }
+  return [...DEFAULT_MODEL_INPUT];
+}
 
 type ModelDefinitionLike = Partial<ModelDefinitionConfig> &
   Pick<ModelDefinitionConfig, "id" | "name">;
@@ -238,8 +272,14 @@ export function applyModelDefaults(cfg: OpenClawConfig): OpenClawConfig {
           modelMutated = true;
         }
 
-        const input = raw.input ?? [...DEFAULT_MODEL_INPUT];
-        if (raw.input === undefined) {
+        const inferred = inferModelInput(raw.id);
+        // Use inferred input when: (1) no explicit input set, or (2) the inferred
+        // capabilities are broader than what's configured (e.g. model is known to
+        // support images but config only has ["text"]).
+        const inferredHasImage = inferred.includes("image");
+        const rawHasImage = raw.input?.includes("image") ?? false;
+        const input = inferredHasImage && !rawHasImage ? inferred : (raw.input ?? inferred);
+        if (input !== raw.input) {
           modelMutated = true;
         }
 

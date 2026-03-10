@@ -193,6 +193,8 @@ export async function tryDispatchAcpReply(params: {
   shouldSendToolSummaries: boolean;
   bypassForCommand: boolean;
   onReplyStart?: () => Promise<void> | void;
+  /** Inline image attachments (e.g. from webchat paste) already in base64. */
+  inlineImages?: Array<{ data: string; mimeType: string }>;
   recordProcessed: DispatchProcessedRecorder;
   markIdle: (reason: string) => void;
 }): Promise<AcpDispatchAttemptResult | null> {
@@ -226,6 +228,23 @@ export async function tryDispatchAcpReply(params: {
 
   const promptText = resolveAcpPromptText(params.ctx);
   const attachments = await resolveAcpAttachments(params.ctx);
+
+  // Merge inline images (e.g. webchat-pasted screenshots) that arrive as
+  // base64 in replyOptions.images rather than as file paths on ctx.
+  if (params.inlineImages) {
+    for (const img of params.inlineImages) {
+      if (img.data && img.mimeType) {
+        attachments.push({
+          mediaType: img.mimeType,
+          data: img.data,
+        });
+      }
+    }
+  }
+  logVerbose(
+    `dispatch-acp: inlineImages=${params.inlineImages?.length ?? 0} ctxAttachments=${attachments.length - (params.inlineImages?.length ?? 0)} totalAttachments=${attachments.length} promptLen=${promptText.length}`,
+  );
+
   if (!promptText && attachments.length === 0) {
     const counts = params.dispatcher.getQueuedCounts();
     delivery.applyRoutedCounts(counts);

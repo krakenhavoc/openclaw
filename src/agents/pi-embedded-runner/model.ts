@@ -1,6 +1,7 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { OpenClawConfig } from "../../config/config.js";
+import { inferModelInput } from "../../config/defaults.js";
 import type { ModelDefinitionConfig } from "../../config/types.js";
 import { resolveOpenClawAgentDir } from "../agent-paths.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
@@ -315,7 +316,7 @@ export function resolveModelWithRegistry(params: {
         provider,
         baseUrl: "https://openrouter.ai/api/v1",
         reasoning: false,
-        input: ["text"],
+        input: inferModelInput(modelId),
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: DEFAULT_CONTEXT_TOKENS,
         // Align with OPENROUTER_DEFAULT_MAX_TOKENS in models-config.providers.ts
@@ -342,7 +343,7 @@ export function resolveModelWithRegistry(params: {
         provider,
         baseUrl: resolveAzureBaseUrl(providerConfig?.baseUrl, modelId) ?? providerConfig?.baseUrl,
         reasoning: configuredModel?.reasoning ?? false,
-        input: ["text"],
+        input: configuredModel?.input ?? inferModelInput(modelId),
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow:
           configuredModel?.contextWindow ??

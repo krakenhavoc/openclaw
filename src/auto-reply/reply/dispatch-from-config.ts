@@ -351,6 +351,7 @@ export async function dispatchReplyFromConfig(params: {
       shouldSendToolSummaries,
       bypassForCommand: bypassAcpForCommand,
       onReplyStart: params.replyOptions?.onReplyStart,
+      inlineImages: params.replyOptions?.images,
       recordProcessed,
       markIdle,
     });
@@ -465,6 +466,7 @@ export async function dispatchReplyFromConfig(params: {
         shouldSendToolSummaries,
         bypassForCommand: false,
         onReplyStart: params.replyOptions?.onReplyStart,
+        inlineImages: params.replyOptions?.images,
         recordProcessed,
         markIdle,
       });

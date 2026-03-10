@@ -300,6 +300,11 @@ export async function detectAndLoadPromptImages(params: {
 }> {
   // If model doesn't support images, return empty results
   if (!modelSupportsImages(params.model)) {
+    if (params.existingImages && params.existingImages.length > 0) {
+      log.warn(
+        `Native image: model does not support images (input=${JSON.stringify(params.model.input)}), dropping ${params.existingImages.length} existing image(s)`,
+      );
+    }
     return {
       images: [],
       detectedRefs: [],
