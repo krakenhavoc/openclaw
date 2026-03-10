@@ -225,6 +225,34 @@ describe("Azure Foundry auto-discovery", () => {
     expect(models[2]?.reasoning).toBe(false); // gpt-4o
   });
 
+  it("marks GPT-5 models as image-capable", async () => {
+    setupDiscoveryEnv();
+    const response = makeAzureDeploymentsResponse([
+      { id: "gpt-5-chat", model: "gpt-5.3-chat", status: "succeeded" },
+      { id: "gpt-5-mini", model: "gpt-5-mini", status: "succeeded" },
+      { id: "gpt-35-turbo", model: "gpt-3.5-turbo", status: "succeeded" },
+    ]);
+    mockFetchForAzure(response);
+
+    const agentDir = mkdtempSync(join(tmpdir(), "openclaw-test-"));
+    const providers = await resolveImplicitProviders({
+      agentDir,
+      explicitProviders: {
+        "azure-foundry": {
+          baseUrl: AZURE_BASE_URL,
+          apiKey: AZURE_API_KEY,
+          models: [],
+        },
+      },
+    });
+
+    const models = providers?.["azure-foundry"]?.models ?? [];
+    expect(models).toHaveLength(3);
+    expect(models[0]?.input).toEqual(["text", "image"]); // gpt-5.3-chat
+    expect(models[1]?.input).toEqual(["text", "image"]); // gpt-5-mini
+    expect(models[2]?.input).toEqual(["text"]); // gpt-3.5-turbo (no image)
+  });
+
   it("also detects classic Azure OpenAI URLs", async () => {
     setupDiscoveryEnv();
     const response = makeAzureDeploymentsResponse([

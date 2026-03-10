@@ -148,7 +148,9 @@ async function discoverAzureDeployments(
       .map((d) => {
         const lower = d.modelName.toLowerCase();
         const isReasoning = lower.includes("o1") || lower.includes("o3") || lower.includes("o4");
-        const supportsImage = lower.includes("gpt-4o") || lower.includes("gpt-4-vision");
+        // GPT-4o, GPT-4-vision, and GPT-5+ all support image input
+        const supportsImage =
+          lower.includes("gpt-4o") || lower.includes("gpt-4-vision") || lower.includes("gpt-5");
         return {
           id: d.deploymentId,
           name: `${d.modelName} (${d.deploymentId})`,
