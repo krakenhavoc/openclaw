@@ -131,3 +131,4 @@ deploy/open-webui/
 # Claude Code local settings
 .claude/
 claude/
+.dev-state

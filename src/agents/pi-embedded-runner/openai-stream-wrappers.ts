@@ -218,7 +218,7 @@ export function createOpenAIResponsesContextManagementWrapper(
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload, payloadModel) => {
+      onPayload: (payload) => {
         if (payload && typeof payload === "object") {
           applyOpenAIResponsesPayloadOverrides({
             payloadObj: payload as Record<string, unknown>,
@@ -228,7 +228,7 @@ export function createOpenAIResponsesContextManagementWrapper(
             compactThreshold,
           });
         }
-        return originalOnPayload?.(payload, payloadModel);
+        return originalOnPayload?.(payload, model);
       },
     });
   };
@@ -250,14 +250,14 @@ export function createOpenAIServiceTierWrapper(
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload, payloadModel) => {
+      onPayload: (payload) => {
         if (payload && typeof payload === "object") {
           const payloadObj = payload as Record<string, unknown>;
           if (payloadObj.service_tier === undefined) {
             payloadObj.service_tier = serviceTier;
           }
         }
-        return originalOnPayload?.(payload, payloadModel);
+        return originalOnPayload?.(payload, model);
       },
     });
   };
