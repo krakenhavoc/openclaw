@@ -515,6 +515,8 @@ public struct PollParams: Codable, Sendable {
 public struct AgentParams: Codable, Sendable {
     public let message: String
     public let agentid: String?
+    public let provider: String?
+    public let model: String?
     public let to: String?
     public let replyto: String?
     public let sessionid: String?
@@ -542,6 +544,8 @@ public struct AgentParams: Codable, Sendable {
     public init(
         message: String,
         agentid: String?,
+        provider: String?,
+        model: String?,
         to: String?,
         replyto: String?,
         sessionid: String?,
@@ -568,6 +572,8 @@ public struct AgentParams: Codable, Sendable {
     {
         self.message = message
         self.agentid = agentid
+        self.provider = provider
+        self.model = model
         self.to = to
         self.replyto = replyto
         self.sessionid = sessionid
@@ -596,6 +602,8 @@ public struct AgentParams: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case message
         case agentid = "agentId"
+        case provider
+        case model
         case to
         case replyto = "replyTo"
         case sessionid = "sessionId"
@@ -1322,6 +1330,7 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let key: String
     public let label: AnyCodable?
     public let thinkinglevel: AnyCodable?
+    public let fastmode: AnyCodable?
     public let verboselevel: AnyCodable?
     public let reasoninglevel: AnyCodable?
     public let responseusage: AnyCodable?
@@ -1343,6 +1352,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         key: String,
         label: AnyCodable?,
         thinkinglevel: AnyCodable?,
+        fastmode: AnyCodable?,
         verboselevel: AnyCodable?,
         reasoninglevel: AnyCodable?,
         responseusage: AnyCodable?,
@@ -1363,6 +1373,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.key = key
         self.label = label
         self.thinkinglevel = thinkinglevel
+        self.fastmode = fastmode
         self.verboselevel = verboselevel
         self.reasoninglevel = reasoninglevel
         self.responseusage = responseusage
@@ -1385,6 +1396,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         case key
         case label
         case thinkinglevel = "thinkingLevel"
+        case fastmode = "fastMode"
         case verboselevel = "verboseLevel"
         case reasoninglevel = "reasoningLevel"
         case responseusage = "responseUsage"
