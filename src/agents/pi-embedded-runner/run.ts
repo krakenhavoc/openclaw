@@ -70,7 +70,7 @@ import { buildEmbeddedCompactionRuntimeContext } from "./compaction-runtime-cont
 import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
-import { resolveModelAsync } from "./model.js";
+import { ensureAzureFetchInterceptor, resolveModelAsync } from "./model.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
@@ -268,6 +268,10 @@ function buildErrorAgentMeta(params: {
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
+  // Install the Azure fetch interceptor early, before any model resolution or
+  // OpenAI SDK instantiation, so that globalThis.fetch is patched before the
+  // SDK captures the reference in its constructor.
+  ensureAzureFetchInterceptor();
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);
   const globalLane = resolveGlobalLane(params.lane);
   const enqueueGlobal =

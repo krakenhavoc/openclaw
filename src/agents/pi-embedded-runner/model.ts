@@ -91,7 +91,7 @@ function resolveAzureBaseUrl(baseUrl: string | undefined, modelId: string): stri
  * `api-version` (only `AzureOpenAI` does). Without it Azure returns errors.
  */
 let azureFetchInterceptorInstalled = false;
-function ensureAzureFetchInterceptor(): void {
+export function ensureAzureFetchInterceptor(): void {
   if (azureFetchInterceptorInstalled) {
     return;
   }
