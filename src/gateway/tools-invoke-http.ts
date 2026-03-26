@@ -290,8 +290,10 @@ export async function handleToolsInvokeHttpRequest(
       ...buildDefaultToolPolicyPipelineSteps({
         profilePolicy: profilePolicyWithAlsoAllow,
         profile,
+        profileAlsoAllow,
         providerProfilePolicy: providerProfilePolicyWithAlsoAllow,
         providerProfile,
+        providerProfileAlsoAllow,
         globalPolicy,
         globalProviderPolicy,
         agentPolicy,

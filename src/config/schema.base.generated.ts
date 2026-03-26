@@ -5629,6 +5629,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
                     exclusiveMinimum: 0,
                     maximum: 9007199254740991,
                   },
+                  maxResponseBytes: {
+                    type: "integer",
+                    exclusiveMinimum: 0,
+                    maximum: 9007199254740991,
+                  },
                   timeoutSeconds: {
                     type: "integer",
                     exclusiveMinimum: 0,
@@ -12956,6 +12961,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       help: "Hard cap for web_fetch maxChars (applies to config and tool calls).",
       tags: ["performance", "tools"],
     },
+    "tools.web.fetch.maxResponseBytes": {
+      label: "Web Fetch Max Download Size (bytes)",
+      help: "Max download size before truncation.",
+      tags: ["performance", "tools"],
+    },
     "tools.web.fetch.timeoutSeconds": {
       label: "Web Fetch Timeout (sec)",
       help: "Timeout in seconds for web_fetch requests.",
@@ -16298,6 +16308,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       tags: ["security", "auth"],
     },
   },
-  version: "2026.3.24-beta.2",
+  version: "2026.3.25",
   generatedAt: "2026-03-22T21:17:33.302Z",
 } as const satisfies BaseConfigSchemaResponse;
