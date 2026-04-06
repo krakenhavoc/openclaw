@@ -2,8 +2,10 @@ import { vi } from "vitest";
 import { createMockTypingController } from "./reply.test-helpers.js";
 
 export function registerGetReplyCommonMocks(): void {
-  vi.mock("../../agents/agent-scope.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../../agents/agent-scope.js")>();
+  vi.mock("../../agents/agent-scope.js", async () => {
+    const actual = await vi.importActual<typeof import("../../agents/agent-scope.js")>(
+      "../../agents/agent-scope.js",
+    );
     return {
       ...actual,
       resolveAgentDir: vi.fn(() => "/tmp/agent"),
@@ -12,8 +14,10 @@ export function registerGetReplyCommonMocks(): void {
       resolveAgentSkillsFilter: vi.fn(() => undefined),
     };
   });
-  vi.mock("../../agents/model-selection.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../../agents/model-selection.js")>();
+  vi.mock("../../agents/model-selection.js", async () => {
+    const actual = await vi.importActual<typeof import("../../agents/model-selection.js")>(
+      "../../agents/model-selection.js",
+    );
     return {
       ...actual,
       resolveModelRefFromString: vi.fn(() => null),
@@ -51,10 +55,10 @@ export function registerGetReplyCommonMocks(): void {
   vi.mock("./inbound-context.js", () => ({
     finalizeInboundContext: vi.fn((ctx: unknown) => ctx),
   }));
-  vi.mock("./session-reset-model.js", () => ({
+  vi.mock("./session-reset-model.runtime.js", () => ({
     applyResetModelOverride: vi.fn(async () => undefined),
   }));
-  vi.mock("./stage-sandbox-media.js", () => ({
+  vi.mock("./stage-sandbox-media.runtime.js", () => ({
     stageSandboxMedia: vi.fn(async () => undefined),
   }));
   vi.mock("./typing.js", () => ({

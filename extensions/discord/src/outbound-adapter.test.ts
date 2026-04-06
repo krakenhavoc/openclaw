@@ -1,34 +1,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDiscordOutboundHoisted,
-  createDiscordSendModuleMock,
-  createDiscordThreadBindingsModuleMock,
   expectDiscordThreadBotSend,
+  installDiscordOutboundModuleSpies,
   mockDiscordBoundThreadManager,
   resetDiscordOutboundMocks,
 } from "./outbound-adapter.test-harness.js";
 
 const hoisted = createDiscordOutboundHoisted();
-
-const sendModule = await import("./send.js");
-const mockedSendModule = await createDiscordSendModuleMock(hoisted, async () => sendModule);
-vi.spyOn(sendModule, "sendMessageDiscord").mockImplementation(mockedSendModule.sendMessageDiscord);
-vi.spyOn(sendModule, "sendDiscordComponentMessage").mockImplementation(
-  mockedSendModule.sendDiscordComponentMessage,
-);
-vi.spyOn(sendModule, "sendPollDiscord").mockImplementation(mockedSendModule.sendPollDiscord);
-vi.spyOn(sendModule, "sendWebhookMessageDiscord").mockImplementation(
-  mockedSendModule.sendWebhookMessageDiscord,
-);
-
-const threadBindingsModule = await import("./monitor/thread-bindings.js");
-const mockedThreadBindingsModule = await createDiscordThreadBindingsModuleMock(
-  hoisted,
-  async () => threadBindingsModule,
-);
-vi.spyOn(threadBindingsModule, "getThreadBindingManager").mockImplementation(
-  mockedThreadBindingsModule.getThreadBindingManager,
-);
+await installDiscordOutboundModuleSpies(hoisted);
 
 let normalizeDiscordOutboundTarget: typeof import("./normalize.js").normalizeDiscordOutboundTarget;
 let discordOutbound: typeof import("./outbound-adapter.js").discordOutbound;
@@ -259,5 +239,51 @@ describe("discordOutbound", () => {
       messageId: "msg-2",
       channelId: "ch-1",
     });
+  });
+
+  it("neutralizes approval mentions only for approval payloads", async () => {
+    await discordOutbound.sendPayload?.({
+      cfg: {},
+      to: "channel:123456",
+      text: "",
+      payload: {
+        text: "Approval @everyone <@123> <#456>",
+        channelData: {
+          execApproval: {
+            approvalId: "req-1",
+            approvalSlug: "req-1",
+          },
+        },
+      },
+      accountId: "default",
+    });
+
+    expect(hoisted.sendMessageDiscordMock).toHaveBeenCalledWith(
+      "channel:123456",
+      "Approval @\u200beveryone <@\u200b123> <#\u200b456>",
+      expect.objectContaining({
+        accountId: "default",
+      }),
+    );
+  });
+
+  it("leaves non-approval mentions unchanged", async () => {
+    await discordOutbound.sendPayload?.({
+      cfg: {},
+      to: "channel:123456",
+      text: "",
+      payload: {
+        text: "Hello @everyone",
+      },
+      accountId: "default",
+    });
+
+    expect(hoisted.sendMessageDiscordMock).toHaveBeenCalledWith(
+      "channel:123456",
+      "Hello @everyone",
+      expect.objectContaining({
+        accountId: "default",
+      }),
+    );
   });
 });
