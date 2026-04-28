@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import type { LegacyConfigRule } from "../config/legacy.shared.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { asNullableRecord } from "../shared/record-coerce.js";
-import { discoverOpenClawPlugins } from "./discovery.js";
 import { getCachedPluginJitiLoader, type PluginJitiLoaderCache } from "./jiti-loader-cache.js";
-import { loadPluginManifestRegistry } from "./manifest-registry.js";
+import type { PluginManifestRegistry } from "./manifest-registry.js";
+import { tryNativeRequireJavaScriptModule } from "./native-module-require.js";
+import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry.js";
 import { resolvePluginCacheInputs, type PluginSourceRoots } from "./roots.js";
 
 const CONTRACT_API_EXTENSIONS = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"] as const;
@@ -35,9 +36,7 @@ type PluginDoctorContractEntry = {
   normalizeCompatibilityConfig?: PluginDoctorCompatibilityNormalizer;
 };
 
-type PluginManifestRegistryRecord = ReturnType<
-  typeof loadPluginManifestRegistry
->["plugins"][number];
+type PluginManifestRegistryRecord = PluginManifestRegistry["plugins"][number];
 
 const jitiLoaders: PluginJitiLoaderCache = new Map();
 const doctorContractCache = new Map<string, PluginDoctorContractEntry[]>();
@@ -49,6 +48,14 @@ function getJiti(modulePath: string) {
     modulePath,
     importerUrl: import.meta.url,
   });
+}
+
+function loadPluginDoctorContractModule(modulePath: string): PluginDoctorContractModule {
+  const nativeModule = tryNativeRequireJavaScriptModule(modulePath);
+  if (nativeModule.ok) {
+    return nativeModule.moduleExport as PluginDoctorContractModule;
+  }
+  return getJiti(modulePath)(modulePath) as PluginDoctorContractModule;
 }
 
 function buildDoctorContractCacheKey(params: {
@@ -161,6 +168,42 @@ export function collectRelevantDoctorPluginIds(raw: unknown): string[] {
   return [...ids].toSorted();
 }
 
+export function collectRelevantDoctorPluginIdsForTouchedPaths(params: {
+  raw: unknown;
+  touchedPaths: ReadonlyArray<ReadonlyArray<string>>;
+}): string[] {
+  const root = asNullableRecord(params.raw);
+  if (!root) {
+    return [];
+  }
+
+  const ids = new Set<string>();
+  for (const touchedPath of params.touchedPaths) {
+    const [first, second, third] = touchedPath;
+    if (first === "channels") {
+      if (!second) {
+        return collectRelevantDoctorPluginIds(params.raw);
+      }
+      if (second !== "defaults") {
+        ids.add(second);
+      }
+      continue;
+    }
+    if (first === "plugins") {
+      if (second !== "entries" || !third) {
+        return collectRelevantDoctorPluginIds(params.raw);
+      }
+      ids.add(third);
+      continue;
+    }
+    if (first === "talk" && hasLegacyElevenLabsTalkFields(root)) {
+      ids.add("elevenlabs");
+    }
+  }
+
+  return [...ids].toSorted();
+}
+
 function getDoctorContractRecordCache(
   baseCacheKey: string,
 ): Map<string, PluginDoctorContractEntry | null> {
@@ -189,7 +232,7 @@ function loadPluginDoctorContractEntry(
   }
   let mod: PluginDoctorContractModule;
   try {
-    mod = getJiti(contractSource)(contractSource) as PluginDoctorContractModule;
+    mod = loadPluginDoctorContractModule(contractSource);
   } catch {
     cache.set(record.id, null);
     return null;
@@ -240,17 +283,11 @@ function resolvePluginDoctorContracts(params?: {
     return [];
   }
 
-  const discovery = discoverOpenClawPlugins({
+  const manifestRegistry = loadPluginManifestRegistryForPluginRegistry({
     workspaceDir: params?.workspaceDir,
     env,
     cache: true,
-  });
-  const manifestRegistry = loadPluginManifestRegistry({
-    workspaceDir: params?.workspaceDir,
-    env,
-    cache: true,
-    candidates: discovery.candidates,
-    diagnostics: discovery.diagnostics,
+    includeDisabled: true,
   });
 
   const entries: PluginDoctorContractEntry[] = [];

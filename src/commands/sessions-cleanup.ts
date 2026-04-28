@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { loadConfig } from "../config/config.js";
+import { getRuntimeConfig } from "../config/config.js";
 import {
   capEntryCount,
   enforceSessionDiskBudget,
@@ -20,12 +20,14 @@ import {
   type SessionStoreTarget,
 } from "./session-store-targets.js";
 import {
+  resolveSessionDisplayDefaults,
+  resolveSessionDisplayModel,
+} from "./sessions-display-model.js";
+import {
   formatSessionAgeCell,
   formatSessionFlagsCell,
   formatSessionKeyCell,
   formatSessionModelCell,
-  resolveSessionDisplayDefaults,
-  resolveSessionDisplayModel,
   SESSION_AGE_PAD,
   SESSION_KEY_PAD,
   SESSION_MODEL_PAD,
@@ -121,16 +123,17 @@ function buildActionRows(params: {
   cappedKeys: Set<string>;
   budgetEvictedKeys: Set<string>;
 }): SessionCleanupActionRow[] {
-  return toSessionDisplayRows(params.beforeStore).map((row) => ({
-    ...row,
-    action: resolveSessionCleanupAction({
-      key: row.key,
-      missingKeys: params.missingKeys,
-      staleKeys: params.staleKeys,
-      cappedKeys: params.cappedKeys,
-      budgetEvictedKeys: params.budgetEvictedKeys,
+  return toSessionDisplayRows(params.beforeStore).map((row) =>
+    Object.assign({}, row, {
+      action: resolveSessionCleanupAction({
+        key: row.key,
+        missingKeys: params.missingKeys,
+        staleKeys: params.staleKeys,
+        cappedKeys: params.cappedKeys,
+        budgetEvictedKeys: params.budgetEvictedKeys,
+      }),
     }),
-  }));
+  );
 }
 
 function pruneMissingTranscriptEntries(params: {
@@ -280,7 +283,7 @@ function renderStoreDryRunPlan(params: {
   ].join(" ");
   params.runtime.log(rich ? theme.heading(header) : header);
   for (const actionRow of params.actionRows) {
-    const model = resolveSessionDisplayModel(params.cfg, actionRow, params.displayDefaults);
+    const model = resolveSessionDisplayModel(params.cfg, actionRow);
     const line = [
       formatCleanupActionCell(actionRow.action, rich),
       formatSessionKeyCell(actionRow.key, rich),
@@ -293,7 +296,7 @@ function renderStoreDryRunPlan(params: {
 }
 
 export async function sessionsCleanupCommand(opts: SessionsCleanupOptions, runtime: RuntimeEnv) {
-  const cfg = loadConfig();
+  const cfg = getRuntimeConfig();
   const displayDefaults = resolveSessionDisplayDefaults(cfg);
   const mode = opts.enforce ? "enforce" : resolveMaintenanceConfig().mode;
   const targets = resolveSessionStoreTargetsOrExit({

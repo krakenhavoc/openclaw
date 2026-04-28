@@ -5,11 +5,13 @@ import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
 import { resolveGatewayProbeTarget } from "../gateway/probe-target.js";
 import type { probeGateway as probeGatewayFn } from "../gateway/probe.js";
 import type { MemoryProviderStatus } from "../memory-host-sdk/engine-storage.js";
+import { defaultSlotIdForKey } from "../plugins/slots.js";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "../shared/string-coerce.js";
 import { pickGatewaySelfPresence } from "./gateway-presence.js";
+import { isProbeReachable } from "./gateway-status/helpers.js";
 export { pickGatewaySelfPresence } from "./gateway-presence.js";
 
 let gatewayProbeModulePromise: Promise<typeof import("./status.gateway-probe.js")> | undefined;
@@ -54,6 +56,20 @@ export type GatewayProbeSnapshot = {
   };
 };
 
+type StatusMemorySearchManager = {
+  probeVectorAvailability(): Promise<boolean>;
+  status(): MemoryProviderStatus;
+  close?(): Promise<void>;
+};
+
+type StatusMemorySearchManagerResolver = (params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  purpose: "status";
+}) => Promise<{
+  manager: StatusMemorySearchManager | null;
+}>;
+
 export function hasExplicitMemorySearchConfig(cfg: OpenClawConfig, agentId: string): boolean {
   if (
     cfg.agents?.defaults &&
@@ -76,7 +92,7 @@ export function resolveMemoryPluginStatus(cfg: OpenClawConfig): MemoryPluginStat
   if (normalizeOptionalLowercaseString(raw) === "none") {
     return { enabled: false, slot: null, reason: 'plugins.slots.memory="none"' };
   }
-  return { enabled: true, slot: raw || "memory-core" };
+  return { enabled: true, slot: raw || defaultSlotIdForKey("memory") };
 }
 
 export async function resolveGatewayProbeSnapshot(params: {
@@ -127,7 +143,7 @@ export async function resolveGatewayProbeSnapshot(params: {
       : gatewayProbeAuthWarning;
     gatewayProbeAuthWarning = undefined;
   }
-  const gatewayReachable = gatewayProbe?.ok === true;
+  const gatewayReachable = gatewayProbe ? isProbeReachable(gatewayProbe) : false;
   const gatewaySelf = gatewayProbe?.presence
     ? pickGatewaySelfPresence(gatewayProbe.presence)
     : null;
@@ -167,17 +183,7 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
   agentStatus: { defaultId?: string | null };
   memoryPlugin: MemoryPluginStatus;
   resolveMemoryConfig: (cfg: OpenClawConfig, agentId: string) => { store: { path: string } } | null;
-  getMemorySearchManager: (params: {
-    cfg: OpenClawConfig;
-    agentId: string;
-    purpose: "status";
-  }) => Promise<{
-    manager: {
-      probeVectorAvailability(): Promise<boolean>;
-      status(): MemoryProviderStatus;
-      close?(): Promise<void>;
-    } | null;
-  }>;
+  getMemorySearchManager: StatusMemorySearchManagerResolver;
   requireDefaultStore?: (agentId: string) => string | null;
 }): Promise<MemoryStatusSnapshot | null> {
   const { cfg, agentStatus, memoryPlugin } = params;
@@ -185,6 +191,11 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
     return null;
   }
   const agentId = agentStatus.defaultId ?? "main";
+
+  if (memoryPlugin.slot !== defaultSlotIdForKey("memory")) {
+    return await resolveMemoryManagerStatusSnapshot(params, agentId);
+  }
+
   const defaultStorePath = params.requireDefaultStore?.(agentId);
   if (
     defaultStorePath &&
@@ -202,14 +213,31 @@ export async function resolveSharedMemoryStatusSnapshot(params: {
   if (!shouldInspectStore) {
     return null;
   }
-  const { manager } = await params.getMemorySearchManager({ cfg, agentId, purpose: "status" });
+  return await resolveMemoryManagerStatusSnapshot(params, agentId);
+}
+
+async function resolveMemoryManagerStatusSnapshot(
+  params: {
+    cfg: OpenClawConfig;
+    getMemorySearchManager: StatusMemorySearchManagerResolver;
+  },
+  agentId: string,
+): Promise<MemoryStatusSnapshot | null> {
+  const { manager } = await params.getMemorySearchManager({
+    cfg: params.cfg,
+    agentId,
+    purpose: "status",
+  });
   if (!manager) {
     return null;
   }
   try {
-    await manager.probeVectorAvailability();
-  } catch {}
-  const status = manager.status();
-  await manager.close?.().catch(() => {});
-  return { agentId, ...status };
+    try {
+      await manager.probeVectorAvailability();
+    } catch {}
+    const status = manager.status();
+    return { agentId, ...status };
+  } finally {
+    await manager.close?.().catch(() => {});
+  }
 }

@@ -5,13 +5,13 @@ import {
   type NormalizedLocation,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { normalizeCommandBody } from "openclaw/plugin-sdk/command-surface";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
-import { resolveChannelContextVisibilityMode } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import type {
   TelegramDirectConfig,
   TelegramGroupConfig,
   TelegramTopicConfig,
-} from "openclaw/plugin-sdk/config-runtime";
+} from "openclaw/plugin-sdk/config-types";
+import { resolveChannelContextVisibilityMode } from "openclaw/plugin-sdk/context-visibility-runtime";
 import {
   buildPendingHistoryContextFromMap,
   type HistoryEntry,
@@ -76,6 +76,17 @@ async function loadTelegramMessageContextSessionRuntime(
   };
 }
 
+export async function resolveTelegramMessageContextStorePath(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  sessionRuntime?: TelegramMessageContextSessionRuntimeOverrides;
+}): Promise<string> {
+  const sessionRuntime = await loadTelegramMessageContextSessionRuntime(params.sessionRuntime);
+  return sessionRuntime.resolveStorePath(params.cfg.session?.store, {
+    agentId: params.agentId,
+  });
+}
+
 export async function buildTelegramInboundContextPayload(params: {
   cfg: OpenClawConfig;
   primaryCtx: TelegramContext;
@@ -100,11 +111,13 @@ export async function buildTelegramInboundContextPayload(params: {
   topicConfig?: TelegramTopicConfig;
   stickerCacheHit: boolean;
   effectiveWasMentioned: boolean;
+  audioTranscribedMediaIndex?: number;
   commandAuthorized: boolean;
   locationData?: NormalizedLocation;
   options?: TelegramMessageContextOptions;
   dmAllowFrom?: Array<string | number>;
   effectiveGroupAllow?: NormalizedAllowFrom;
+  topicName?: string;
   sessionRuntime?: TelegramMessageContextSessionRuntimeOverrides;
 }): Promise<{
   ctxPayload: FinalizedTelegramInboundContext;
@@ -134,11 +147,13 @@ export async function buildTelegramInboundContextPayload(params: {
     topicConfig,
     stickerCacheHit,
     effectiveWasMentioned,
+    audioTranscribedMediaIndex,
     commandAuthorized,
     locationData,
     options,
     dmAllowFrom,
     effectiveGroupAllow,
+    topicName,
     sessionRuntime: sessionRuntimeOverride,
   } = params;
   const replyTarget = describeReplyTarget(msg);
@@ -208,14 +223,29 @@ export async function buildTelegramInboundContextPayload(params: {
           : ""
       }]\n`
     : "";
+  const buildReplySupplementalLines = (params: { body?: string }) => {
+    const lines: string[] = [];
+    const forwardAnnotation = replyForwardAnnotation.trimEnd();
+    if (forwardAnnotation) {
+      lines.push(forwardAnnotation);
+    }
+    if (params.body) {
+      lines.push(params.body);
+    }
+    return lines.length > 0 ? `\n${lines.join("\n")}` : "";
+  };
   const replySuffix = visibleReplyTarget
     ? visibleReplyTarget.kind === "quote"
       ? `\n\n[Quoting ${visibleReplyTarget.sender}${
           visibleReplyTarget.id ? ` id:${visibleReplyTarget.id}` : ""
-        }]\n${replyForwardAnnotation}"${visibleReplyTarget.body}"\n[/Quoting]`
+        }]${buildReplySupplementalLines({
+          body: visibleReplyTarget.body ? `"${visibleReplyTarget.body}"` : undefined,
+        })}\n[/Quoting]`
       : `\n\n[Replying to ${visibleReplyTarget.sender}${
           visibleReplyTarget.id ? ` id:${visibleReplyTarget.id}` : ""
-        }]\n${replyForwardAnnotation}${visibleReplyTarget.body}\n[/Replying]`
+        }]${buildReplySupplementalLines({
+          body: visibleReplyTarget.body,
+        })}\n[/Replying]`
     : "";
   const forwardPrefix = visibleForwardOrigin
     ? `[Forwarded from ${visibleForwardOrigin.from}${
@@ -230,8 +260,10 @@ export async function buildTelegramInboundContextPayload(params: {
     ? (groupLabel ?? `group:${chatId}`)
     : buildSenderLabel(msg, senderId || chatId);
   const sessionRuntime = await loadTelegramMessageContextSessionRuntime(sessionRuntimeOverride);
-  const storePath = sessionRuntime.resolveStorePath(cfg.session?.store, {
+  const storePath = await resolveTelegramMessageContextStorePath({
+    cfg,
     agentId: route.agentId,
+    sessionRuntime: sessionRuntimeOverride,
   });
   const envelopeOptions = resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = sessionRuntime.readSessionUpdatedAt({
@@ -314,6 +346,12 @@ export async function buildTelegramInboundContextPayload(params: {
     ReplyToBody: visibleReplyTarget?.body,
     ReplyToSender: visibleReplyTarget?.sender,
     ReplyToIsQuote: visibleReplyTarget?.kind === "quote" ? true : undefined,
+    ReplyToIsExternal: visibleReplyTarget?.source === "external_reply" ? true : undefined,
+    ReplyToQuoteText: visibleReplyTarget?.quoteText,
+    ReplyToQuotePosition: visibleReplyTarget?.quotePosition,
+    ReplyToQuoteEntities: visibleReplyTarget?.quoteEntities,
+    ReplyToQuoteSourceText: visibleReplyTarget?.quoteSourceText,
+    ReplyToQuoteSourceEntities: visibleReplyTarget?.quoteSourceEntities,
     ReplyToForwardedFrom: visibleReplyTarget?.forwardedFrom?.from,
     ReplyToForwardedFromType: visibleReplyTarget?.forwardedFrom?.fromType,
     ReplyToForwardedFromId: visibleReplyTarget?.forwardedFrom?.fromId,
@@ -342,6 +380,9 @@ export async function buildTelegramInboundContextPayload(params: {
       contextMedia.length > 0
         ? (contextMedia.map((m) => m.contentType).filter(Boolean) as string[])
         : undefined,
+    ...(audioTranscribedMediaIndex !== undefined
+      ? { MediaTranscribedIndexes: [audioTranscribedMediaIndex] }
+      : {}),
     Sticker: allMedia[0]?.stickerMetadata,
     StickerMediaIncluded: allMedia[0]?.stickerMetadata ? !stickerCacheHit : undefined,
     ...(locationData ? toLocationContext(locationData) : undefined),
@@ -349,6 +390,7 @@ export async function buildTelegramInboundContextPayload(params: {
     CommandSource: options?.commandSource,
     MessageThreadId: threadSpec.id,
     IsForum: isForum,
+    TopicName: isForum && topicName ? topicName : undefined,
     OriginatingChannel: "telegram" as const,
     OriginatingTo: `telegram:${chatId}`,
   });
@@ -411,7 +453,7 @@ export async function buildTelegramInboundContextPayload(params: {
   });
 
   if (visibleReplyTarget && shouldLogVerbose()) {
-    const preview = visibleReplyTarget.body.replace(/\s+/g, " ").slice(0, 120);
+    const preview = (visibleReplyTarget.body ?? "").replace(/\s+/g, " ").slice(0, 120);
     logVerbose(
       `telegram reply-context: replyToId=${visibleReplyTarget.id} replyToSender=${visibleReplyTarget.sender} replyToBody="${preview}"`,
     );
