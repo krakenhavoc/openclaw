@@ -259,9 +259,13 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 USER root
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs \
- && npm install -g @anthropic-ai/claude-code \
- && apt-get update && apt-get install -y --no-install-recommends jq \
+ && apt-get update && apt-get install -y --no-install-recommends jq curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+USER node
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/home/node/.local/bin:${PATH}"
+USER root
 
 # Pre-create the default state and runtime-deps dirs so first-run Docker named
 # volumes mounted here inherit node ownership instead of root-owned state.
