@@ -44,9 +44,10 @@ import {
 import { normalizeResolvedProviderModel } from "./model.provider-normalization.js";
 
 /** Default Azure API version for Chat Completions (matches Azure AI Inference). */
-const AZURE_RUNTIME_API_VERSION = "2024-10-21";
+const AZURE_RUNTIME_API_VERSION = process.env.AZURE_OPENAI_API_VERSION?.trim() || "2024-10-21";
 /** Azure API version for the Responses API endpoint. */
-const AZURE_RESPONSES_API_VERSION = "2025-04-01-preview";
+const AZURE_RESPONSES_API_VERSION =
+  process.env.AZURE_OPENAI_API_VERSION?.trim() || "2025-04-01-preview";
 
 /**
  * Detect DeepSeek models hosted on Azure AI Foundry.
