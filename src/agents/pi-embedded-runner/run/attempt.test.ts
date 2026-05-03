@@ -24,6 +24,7 @@ import {
   resolveEmbeddedAgentStreamFn,
   resolveUnknownToolGuardThreshold,
   shouldCreateBundleMcpRuntimeForAttempt,
+  resolveAttemptToolPolicyMessageProvider,
   resolvePromptBuildHookResult,
   resolvePromptModeForSession,
   shouldStripBootstrapFromEmbeddedContext,
@@ -33,6 +34,7 @@ import {
   wrapStreamFnSanitizeMalformedToolCalls,
   wrapStreamFnTrimToolCallNames,
 } from "./attempt.js";
+import { buildEmbeddedAttemptToolRunContext } from "./attempt.tool-run-context.js";
 
 type FakeWrappedStream = {
   result: () => Promise<unknown>;
@@ -74,6 +76,32 @@ describe("applyEmbeddedAttemptToolsAllow", () => {
     expect(
       applyEmbeddedAttemptToolsAllow(tools, ["exec", "read"]).map((tool) => tool.name),
     ).toEqual(["exec", "read"]);
+  });
+
+  it("normalizes explicit toolsAllow entries before filtering", () => {
+    const tools = [{ name: "cron" }, { name: "read" }, { name: "message" }];
+
+    expect(
+      applyEmbeddedAttemptToolsAllow(tools, [" cron ", "READ"]).map((tool) => tool.name),
+    ).toEqual(["cron", "read"]);
+  });
+});
+
+describe("buildEmbeddedAttemptToolRunContext", () => {
+  it("carries runtime toolsAllow into coding tool construction", () => {
+    expect(
+      buildEmbeddedAttemptToolRunContext({
+        trigger: "manual",
+        jobId: "job-1",
+        memoryFlushWritePath: "memory/log.md",
+        toolsAllow: ["memory_search", "memory_get"],
+      }),
+    ).toMatchObject({
+      trigger: "manual",
+      jobId: "job-1",
+      memoryFlushWritePath: "memory/log.md",
+      runtimeToolAllowlist: ["memory_search", "memory_get"],
+    });
   });
 });
 
@@ -168,6 +196,21 @@ describe("shouldCreateBundleMcpRuntimeForAttempt", () => {
         toolsAllow: ["strict__strict_probe"],
       }),
     ).toBe(true);
+  });
+});
+
+describe("resolveAttemptToolPolicyMessageProvider", () => {
+  it("prefers explicit tool-policy provider over transport channel", () => {
+    expect(
+      resolveAttemptToolPolicyMessageProvider({
+        messageChannel: "discord",
+        messageProvider: "discord-voice",
+      }),
+    ).toBe("discord-voice");
+  });
+
+  it("falls back to message channel when provider is omitted", () => {
+    expect(resolveAttemptToolPolicyMessageProvider({ messageChannel: "discord" })).toBe("discord");
   });
 });
 
@@ -2151,9 +2194,11 @@ describe("wrapStreamFnSanitizeMalformedToolCalls", () => {
     );
 
     const wrapped = wrapStreamFnSanitizeMalformedToolCalls(baseFn as never, new Set(["read"]));
-    const stream = wrapped({ api: "google-gemini" } as never, { messages } as never, {} as never) as
-      | FakeWrappedStream
-      | Promise<FakeWrappedStream>;
+    const stream = wrapped(
+      { api: "google-gemini" } as never,
+      { messages } as never,
+      {} as never,
+    ) as FakeWrappedStream | Promise<FakeWrappedStream>;
     await Promise.resolve(stream);
 
     expect(baseFn).toHaveBeenCalledTimes(1);

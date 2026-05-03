@@ -1,5 +1,6 @@
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { normalizeProviderId } from "../agents/provider-id.js";
+import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
 import {
   applyProviderConfigDefaultsForConfig,
@@ -10,6 +11,9 @@ import type { ModelDefinitionConfig } from "./types.models.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 type WarnState = { warned: boolean };
+type ProviderPolicyDefaultsOptions = {
+  manifestRegistry?: Pick<PluginManifestRegistry, "plugins">;
+};
 
 let defaultWarnState: WarnState = { warned: false };
 
@@ -118,7 +122,7 @@ export function resolveNormalizedProviderModelMaxTokens(params: {
   return Math.min(safeMaxTokens, params.contextWindow);
 }
 
-export type SessionDefaultsOptions = {
+type SessionDefaultsOptions = {
   warn?: (message: string) => void;
   warnState?: WarnState;
 };
@@ -168,7 +172,10 @@ export function applyTalkConfigNormalization(config: OpenClawConfig): OpenClawCo
   return normalizeTalkConfig(config);
 }
 
-export function applyModelDefaults(cfg: OpenClawConfig): OpenClawConfig {
+export function applyModelDefaults(
+  cfg: OpenClawConfig,
+  options: ProviderPolicyDefaultsOptions = {},
+): OpenClawConfig {
   let mutated = false;
   let nextCfg = cfg;
 
@@ -179,6 +186,7 @@ export function applyModelDefaults(cfg: OpenClawConfig): OpenClawConfig {
       const normalizedProvider = normalizeProviderConfigForConfigDefaults({
         provider: providerId,
         providerConfig: provider,
+        manifestRegistry: options.manifestRegistry,
       });
       const models = normalizedProvider.models;
       if (!Array.isArray(models) || models.length === 0) {
@@ -405,7 +413,10 @@ function hasAnthropicDefaultSignal(cfg: OpenClawConfig, env: NodeJS.ProcessEnv):
   });
 }
 
-export function applyContextPruningDefaults(cfg: OpenClawConfig): OpenClawConfig {
+export function applyContextPruningDefaults(
+  cfg: OpenClawConfig,
+  options: ProviderPolicyDefaultsOptions = {},
+): OpenClawConfig {
   if (!cfg.agents?.defaults) {
     return cfg;
   }
@@ -417,6 +428,7 @@ export function applyContextPruningDefaults(cfg: OpenClawConfig): OpenClawConfig
       provider: "anthropic",
       config: cfg,
       env: process.env,
+      manifestRegistry: options.manifestRegistry,
     }) ?? cfg
   );
 }
@@ -444,8 +456,4 @@ export function applyCompactionDefaults(cfg: OpenClawConfig): OpenClawConfig {
       },
     },
   };
-}
-
-export function resetSessionDefaultsWarningForTests() {
-  defaultWarnState = { warned: false };
 }

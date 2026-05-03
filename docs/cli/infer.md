@@ -49,8 +49,8 @@ Benefits:
 
 For end-to-end provider checks, prefer `openclaw infer ...` once lower-level
 provider tests are green. It exercises the shipped CLI, config loading,
-default-agent resolution, bundled plugin activation, runtime-dependency repair,
-and the shared capability runtime before the provider request is made.
+default-agent resolution, bundled plugin activation, and the shared capability
+runtime before the provider request is made.
 
 ## Command tree
 
@@ -135,6 +135,7 @@ This table maps common inference tasks to the corresponding infer command.
 - `model run --file` accepts image files, detects their MIME type, and sends them with the supplied prompt to the selected model. Repeat `--file` for multiple images.
 - `model run --file` rejects non-image inputs. Use `infer audio transcribe` for audio files and `infer video describe` for video files.
 - `model run --gateway` exercises Gateway routing, saved auth, provider selection, and the embedded runtime, but still runs as a raw model probe: it sends the supplied prompt and any image attachments without prior session transcript, bootstrap/AGENTS context, context-engine assembly, tools, or bundled MCP servers.
+- `model run --gateway --model <provider/model>` requires a trusted operator gateway credential because the request asks the Gateway to run a one-off provider/model override.
 
 ## Model
 
