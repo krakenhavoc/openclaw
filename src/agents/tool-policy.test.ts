@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { DEFAULT_GATEWAY_HTTP_TOOL_DENY } from "../security/dangerous-tools.js";
+import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
 import { isToolAllowed, resolveSandboxToolPolicyForAgent } from "./sandbox/tool-policy.js";
 import type { SandboxToolPolicy } from "./sandbox/types.js";
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
@@ -8,6 +9,7 @@ import { TOOL_POLICY_CONFORMANCE } from "./tool-policy.conformance.js";
 import {
   applyOwnerOnlyToolPolicy,
   collectExplicitAllowlist,
+  DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY,
   expandToolGroups,
   isOwnerOnlyToolName,
   normalizeToolName,
@@ -104,13 +106,13 @@ describe("tool-policy", () => {
     });
   });
 
-  it("strips owner-only tools for non-owner senders", async () => {
+  it("strips owner-only tools for non-owner senders", () => {
     const tools = createOwnerPolicyTools();
     const filtered = applyOwnerOnlyToolPolicy(tools, false);
     expect(filtered.map((t) => t.name)).toEqual(["read"]);
   });
 
-  it("keeps owner-only tools for the owner sender", async () => {
+  it("keeps owner-only tools for the owner sender", () => {
     const tools = createOwnerPolicyTools();
     const filtered = applyOwnerOnlyToolPolicy(tools, true);
     expect(filtered.map((t) => t.name)).toEqual(["read", "cron", "gateway", "nodes"]);
@@ -129,7 +131,7 @@ describe("tool-policy", () => {
     });
   });
 
-  it("honors ownerOnly metadata for custom tool names", async () => {
+  it("honors ownerOnly metadata for custom tool names", () => {
     const tools = [
       {
         name: "custom_admin_tool",
@@ -137,11 +139,11 @@ describe("tool-policy", () => {
         execute: async () => ({ content: [], details: {} }) as any,
       },
     ] as unknown as AnyAgentTool[];
-    expect(applyOwnerOnlyToolPolicy(tools, false)).toEqual([]);
+    expect(applyOwnerOnlyToolPolicy(tools, false)).toStrictEqual([]);
     expect(applyOwnerOnlyToolPolicy(tools, true)).toHaveLength(1);
   });
 
-  it("preserves explicit alsoAllow hints when allow is empty", () => {
+  it("collects explicit allowlist entries", () => {
     expect(
       collectExplicitAllowlist([
         {
@@ -149,6 +151,23 @@ describe("tool-policy", () => {
         },
       ]),
     ).toContain("optional-demo");
+  });
+
+  it("uses alsoAllow entries for plugin discovery without the synthetic allow-all", () => {
+    expect(collectExplicitAllowlist([pickSandboxToolPolicy({ alsoAllow: ["lobster"] })])).toEqual([
+      "lobster",
+      DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY,
+    ]);
+    expect(
+      collectExplicitAllowlist([pickSandboxToolPolicy({ allow: [], alsoAllow: ["lobster"] })]),
+    ).toEqual(["*", "lobster"]);
+  });
+
+  it("preserves explicit alsoAllow wildcards for plugin discovery", () => {
+    expect(collectExplicitAllowlist([pickSandboxToolPolicy({ alsoAllow: ["*"] })])).toEqual(["*"]);
+    expect(collectExplicitAllowlist([pickSandboxToolPolicy({ alsoAllow: [" * "] })])).toEqual([
+      "*",
+    ]);
   });
 
   it("strips nodes for non-owner senders via fallback policy", () => {
@@ -177,7 +196,8 @@ describe("TOOL_POLICY_CONFORMANCE", () => {
   });
 
   it("is JSON-serializable", () => {
-    expect(() => JSON.stringify(TOOL_POLICY_CONFORMANCE)).not.toThrow();
+    const serialized = JSON.stringify(TOOL_POLICY_CONFORMANCE);
+    expect(JSON.parse(serialized)).toEqual({ toolGroups: TOOL_GROUPS });
   });
 });
 
@@ -237,7 +257,7 @@ describe("resolveSandboxToolPolicyForAgent", () => {
       source: "global",
       key: "tools.sandbox.tools.allow",
     });
-    expect(resolved.allow).toEqual([]);
+    expect(resolved.allow).toStrictEqual([]);
     expect(resolved.deny).toEqual(["browser"]);
 
     const policy: SandboxToolPolicy = { allow: resolved.allow, deny: resolved.deny };

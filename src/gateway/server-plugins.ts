@@ -8,6 +8,7 @@ import { clearActivatedPluginRuntimeState, loadOpenClawPlugins } from "../plugin
 import { loadPluginLookUpTable, type PluginLookUpTable } from "../plugins/plugin-lookup-table.js";
 import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import type { PluginRegistryParams } from "../plugins/registry-types.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createPluginRuntimeLoaderLogger } from "../plugins/runtime/load-context.js";
@@ -17,7 +18,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { ADMIN_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "./protocol/client-info.js";
 import type { ErrorShape } from "./protocol/index.js";
-import { PROTOCOL_VERSION } from "./protocol/index.js";
+import { PROTOCOL_VERSION } from "./protocol/version.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandler,
@@ -527,6 +528,7 @@ export function loadGatewayPlugins(params: {
   };
   coreGatewayHandlers?: Record<string, GatewayRequestHandler>;
   coreGatewayMethodNames?: readonly string[];
+  hostServices?: PluginRegistryParams["hostServices"];
   baseMethods: string[];
   pluginIds?: string[];
   pluginLookUpTable?: PluginLookUpTable;
@@ -615,6 +617,9 @@ export function loadGatewayPlugins(params: {
     }),
     ...(params.coreGatewayMethodNames !== undefined && {
       coreGatewayMethodNames: params.coreGatewayMethodNames,
+    }),
+    ...(params.hostServices !== undefined && {
+      hostServices: params.hostServices,
     }),
     runtimeOptions: {
       allowGatewaySubagentBinding: true,

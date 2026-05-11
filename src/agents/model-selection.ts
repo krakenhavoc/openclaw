@@ -14,8 +14,13 @@ import {
   resolveAgentModelFallbacksOverride,
 } from "./agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import { findModelInCatalog } from "./model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
-export { resolveThinkingDefault } from "./model-thinking-default.js";
+import { splitTrailingAuthProfile } from "./model-ref-profile.js";
+export {
+  resolveThinkingDefault,
+  resolveThinkingDefaultWithRuntimeCatalog,
+} from "./model-thinking-default.js";
 import {
   type ModelRef,
   findNormalizedProviderKey,
@@ -81,13 +86,17 @@ export {
 };
 export { isCliProvider } from "./model-selection-cli.js";
 
+function normalizePersistedDefaultProvider(value: unknown): string {
+  return normalizeOptionalString(value) ?? DEFAULT_PROVIDER;
+}
+
 export function resolvePersistedOverrideModelRef(params: {
-  defaultProvider: string;
+  defaultProvider?: unknown;
   overrideProvider?: unknown;
   overrideModel?: unknown;
   allowPluginNormalization?: boolean;
 }): ModelRef | null {
-  const defaultProvider = params.defaultProvider.trim();
+  const defaultProvider = normalizePersistedDefaultProvider(params.defaultProvider);
   const overrideProvider = normalizeOptionalString(params.overrideProvider);
   const overrideModel = normalizeOptionalString(params.overrideModel);
   if (!overrideModel) {
@@ -109,14 +118,14 @@ export function resolvePersistedOverrideModelRef(params: {
  * Use this when callers intentionally want the last executed model identity.
  */
 export function resolvePersistedModelRef(params: {
-  defaultProvider: string;
+  defaultProvider?: unknown;
   runtimeProvider?: unknown;
   runtimeModel?: unknown;
   overrideProvider?: unknown;
   overrideModel?: unknown;
   allowPluginNormalization?: boolean;
 }): ModelRef | null {
-  const defaultProvider = params.defaultProvider.trim();
+  const defaultProvider = normalizePersistedDefaultProvider(params.defaultProvider);
   const runtimeProvider = normalizeOptionalString(params.runtimeProvider);
   const runtimeModel = normalizeOptionalString(params.runtimeModel);
   if (runtimeModel) {
@@ -146,7 +155,7 @@ export function resolvePersistedModelRef(params: {
  * overrides before falling back to runtime identity.
  */
 export function resolvePersistedSelectedModelRef(params: {
-  defaultProvider: string;
+  defaultProvider?: unknown;
   runtimeProvider?: unknown;
   runtimeModel?: unknown;
   overrideProvider?: unknown;
@@ -171,11 +180,11 @@ export function resolvePersistedSelectedModelRef(params: {
 }
 
 export function normalizeStoredOverrideModel(params: {
-  providerOverride?: string | null;
-  modelOverride?: string | null;
+  providerOverride?: unknown;
+  modelOverride?: unknown;
 }): { providerOverride?: string; modelOverride?: string } {
-  const providerOverride = params.providerOverride?.trim();
-  const modelOverride = params.modelOverride?.trim();
+  const providerOverride = normalizeOptionalString(params.providerOverride);
+  const modelOverride = normalizeOptionalString(params.modelOverride);
   if (!providerOverride || !modelOverride) {
     return {
       providerOverride,
@@ -203,6 +212,7 @@ export function resolveAllowlistModelKey(
 export function resolveDefaultModelForAgent(params: {
   cfg: OpenClawConfig;
   agentId?: string;
+  allowPluginNormalization?: boolean;
 }): ModelRef {
   const agentModelOverride = params.agentId
     ? resolveAgentEffectiveModelPrimary(params.cfg, params.agentId)
@@ -227,7 +237,72 @@ export function resolveDefaultModelForAgent(params: {
     cfg,
     defaultProvider: DEFAULT_PROVIDER,
     defaultModel: DEFAULT_MODEL,
+    allowPluginNormalization: params.allowPluginNormalization,
   });
+}
+
+export async function canonicalizeCaseOnlyCatalogModelRef(params: {
+  raw: string | undefined;
+  cfg?: OpenClawConfig;
+  defaultProvider: string;
+  loadCatalog: () => Promise<ModelCatalogEntry[]>;
+  aliasIndex?: ModelAliasIndex;
+  allowManifestNormalization?: boolean;
+  allowPluginNormalization?: boolean;
+  preserveAuthProfile?: boolean;
+}): Promise<string | undefined> {
+  const rawModel = normalizeOptionalString(params.raw);
+  if (!rawModel) {
+    return undefined;
+  }
+  const split = splitTrailingAuthProfile(rawModel);
+  if (shouldKeepProfileQualifiedModelRefRaw(split.profile, params.preserveAuthProfile)) {
+    return rawModel;
+  }
+  if (!isCaseOnlyProviderModelRef(split.model)) {
+    return rawModel;
+  }
+  const resolved = resolveModelRefFromString({
+    cfg: params.cfg,
+    raw: split.model,
+    defaultProvider: params.defaultProvider,
+    aliasIndex: params.aliasIndex,
+    allowManifestNormalization: params.allowManifestNormalization,
+    allowPluginNormalization: params.allowPluginNormalization,
+  });
+  if (!resolved) {
+    return rawModel;
+  }
+  const entry = findModelInCatalog(
+    await params.loadCatalog(),
+    resolved.ref.provider,
+    resolved.ref.model,
+  );
+  return entry ? formatCatalogModelRef(entry, split.profile) : rawModel;
+}
+
+function hasExplicitProviderModelRef(raw: string): boolean {
+  const slash = raw.indexOf("/");
+  return slash > 0 && slash < raw.length - 1;
+}
+
+function isCaseOnlyProviderModelRef(raw: string): boolean {
+  return hasExplicitProviderModelRef(raw) && raw !== raw.toLowerCase();
+}
+
+function shouldKeepProfileQualifiedModelRefRaw(
+  profile: string | undefined,
+  preserveAuthProfile: boolean | undefined,
+): boolean {
+  return Boolean(profile && preserveAuthProfile === false);
+}
+
+function formatCatalogModelRef(entry: ModelCatalogEntry, profile: string | undefined): string {
+  return appendAuthProfileSuffix(`${entry.provider}/${entry.id}`, profile);
+}
+
+function appendAuthProfileSuffix(modelRef: string, profile: string | undefined): string {
+  return profile ? `${modelRef}@${profile}` : modelRef;
 }
 
 function resolveAllowedFallbacks(params: { cfg: OpenClawConfig; agentId?: string }): string[] {

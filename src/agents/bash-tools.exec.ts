@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { buildCommandPayloadCandidates } from "../infra/command-analysis/risks.js";
 import { analyzeShellCommand } from "../infra/exec-approvals-analysis.js";
 import {
@@ -8,7 +8,6 @@ import {
   type ExecSecurity,
   loadExecApprovals,
   maxAsk,
-  minSecurity,
   requireValidExecTarget,
 } from "../infra/exec-approvals.js";
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
@@ -40,18 +39,13 @@ import {
   applyPathPrepend,
   applyShellPath,
   normalizeExecAsk,
-  normalizeExecSecurity,
   normalizePathPrepend,
   resolveExecTarget,
   resolveApprovalRunningNoticeMs,
   runExecProcess,
   execSchema,
 } from "./bash-tools.exec-runtime.js";
-import type {
-  ExecElevatedDefaults,
-  ExecToolDefaults,
-  ExecToolDetails,
-} from "./bash-tools.exec-types.js";
+import type { ExecToolDefaults, ExecToolDetails } from "./bash-tools.exec-types.js";
 import {
   buildSandboxEnv,
   clampWithDefault,
@@ -139,9 +133,9 @@ async function loadFsSafeModule(): Promise<FsSafeModule> {
 
 function shouldSkipScriptPreflightPathError(
   error: unknown,
-  SafeOpenError: FsSafeModule["SafeOpenError"],
+  FsSafeError: FsSafeModule["FsSafeError"],
 ): boolean {
-  if (error instanceof SafeOpenError) {
+  if (error instanceof FsSafeError) {
     return true;
   }
   const errorCode = getNodeErrorCode(error);
@@ -155,8 +149,8 @@ function resolvePreflightRelativePath(params: { rootDir: string; absPath: string
   if (/^\.\.(?:[\\/]|$)/u.test(relative) || path.isAbsolute(relative)) {
     return null;
   }
-  // Preserve literal "~" path segments under the workdir. `readFileWithinRoot`
-  // expands home prefixes for relative paths, so normalize `~/...` to `./~/...`.
+  // Preserve literal "~" path segments under the workdir. Root reads
+  // expand home prefixes for relative paths, so normalize `~/...` to `./~/...`.
   return /^~(?:$|[\\/])/u.test(relative) ? `.${path.sep}${relative}` : relative;
 }
 
@@ -973,7 +967,8 @@ async function validateScriptFileForShellBleed(params: {
     return;
   }
 
-  const { SafeOpenError, readFileWithinRoot } = await loadFsSafeModule();
+  const { FsSafeError, root: fsRoot } = await loadFsSafeModule();
+  const workspaceRoot = await fsRoot(params.workdir);
   for (const relOrAbsPath of target.relOrAbsPaths) {
     const absPath = path.isAbsolute(relOrAbsPath)
       ? path.resolve(relOrAbsPath)
@@ -992,16 +987,14 @@ async function validateScriptFileForShellBleed(params: {
     // Use non-blocking open to avoid stalls if a path is swapped to a FIFO.
     let content: string;
     try {
-      const safeRead = await readFileWithinRoot({
-        rootDir: params.workdir,
-        relativePath,
+      const safeRead = await workspaceRoot.read(relativePath, {
         nonBlockingRead: true,
-        allowSymlinkTargetWithinRoot: true,
+        symlinks: "follow-within-root",
         maxBytes: 512 * 1024,
       });
       content = safeRead.buffer.toString("utf-8");
     } catch (error) {
-      if (shouldSkipScriptPreflightPathError(error, SafeOpenError)) {
+      if (shouldSkipScriptPreflightPathError(error, FsSafeError)) {
         // Preflight validation is best-effort: skip path/read failures and
         // continue to execute the command normally.
         continue;
@@ -1351,8 +1344,7 @@ export function createExecTool(
       const approvalDefaults = loadExecApprovals().defaults;
       const configuredSecurity =
         defaults?.security ?? approvalDefaults?.security ?? (host === "sandbox" ? "deny" : "full");
-      const requestedSecurity = normalizeExecSecurity(params.security);
-      let security = minSecurity(configuredSecurity, requestedSecurity ?? configuredSecurity);
+      let security = configuredSecurity;
       if (elevatedRequested && elevatedMode === "full") {
         security = "full";
       }
@@ -1485,6 +1477,7 @@ export function createExecTool(
           requestedNode: params.node?.trim(),
           boundNode: defaults?.node?.trim(),
           sessionKey: defaults?.sessionKey,
+          bashElevated: elevatedDefaults,
           turnSourceChannel: defaults?.messageProvider,
           turnSourceTo: defaults?.currentChannelId,
           turnSourceAccountId: defaults?.accountId,
@@ -1525,6 +1518,7 @@ export function createExecTool(
           trigger: defaults?.trigger,
           agentId,
           sessionKey: defaults?.sessionKey,
+          bashElevated: elevatedDefaults,
           turnSourceChannel: defaults?.messageProvider,
           turnSourceTo: defaults?.currentChannelId,
           turnSourceAccountId: defaults?.accountId,
@@ -1575,6 +1569,8 @@ export function createExecTool(
         notifyOnExitEmptySuccess,
         scopeKey: defaults?.scopeKey,
         sessionKey: notifySessionKey,
+        mainKey: defaults?.mainKey,
+        sessionScope: defaults?.sessionScope,
         notifyDeliveryContext,
         timeoutSec: effectiveTimeout,
         onUpdate,
@@ -1613,7 +1609,7 @@ export function createExecTool(
                 type: "text",
                 text: `${getWarningText()}Command still running (session ${run.session.id}, pid ${
                   run.session.pid ?? "n/a"
-                }). Use process (list/poll/log/write/kill/clear/remove) for follow-up.`,
+                }). Use process (list/poll/log/write/send-keys/submit/paste/kill/clear/remove) for follow-up.`,
               },
             ],
             details: {
