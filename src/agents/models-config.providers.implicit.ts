@@ -15,6 +15,8 @@ import {
   isNonSecretApiKeyMarker,
   resolveNonEnvSecretRefApiKeyMarker,
 } from "./model-auth-markers.js";
+import { parseConfiguredModelVisibilityEntries } from "./model-selection-shared.js";
+import { mergeProviderModels } from "./models-config.merge.js";
 import type {
   ProviderApiKeyResolver,
   ProviderAuthResolver,
@@ -259,6 +261,7 @@ function mergeImplicitProviderConfig(params: {
   providerId: string;
   existing: ProviderConfig | undefined;
   implicit: ProviderConfig;
+  dynamicProviderModels?: boolean;
 }): ProviderConfig {
   const { providerId, existing, implicit } = params;
   if (!existing) {
@@ -267,6 +270,9 @@ function mergeImplicitProviderConfig(params: {
   const merge = PROVIDER_IMPLICIT_MERGERS[providerId];
   if (merge) {
     return merge({ existing, implicit });
+  }
+  if (params.dynamicProviderModels) {
+    return mergeProviderModels(implicit, existing);
   }
   return {
     ...implicit,
@@ -307,6 +313,15 @@ function resolveExistingImplicitProviderFromContext(params: {
       configuredProviders: params.ctx.config?.models?.providers,
       providerIds: params.providerIds,
     })
+  );
+}
+
+function hasProviderWildcardVisibility(params: {
+  config?: OpenClawConfig;
+  providerId: string;
+}): boolean {
+  return parseConfiguredModelVisibilityEntries({ cfg: params.config }).providerWildcards.has(
+    normalizeProviderId(params.providerId),
   );
 }
 
@@ -390,6 +405,10 @@ async function resolvePluginImplicitProviders(
             ],
           }),
         implicit: implicitProvider,
+        dynamicProviderModels: hasProviderWildcardVisibility({
+          config: ctx.config,
+          providerId,
+        }),
       });
     }
   }

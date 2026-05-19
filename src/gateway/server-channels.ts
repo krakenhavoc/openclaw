@@ -39,6 +39,13 @@ const MAX_RESTART_ATTEMPTS = 10;
 const CHANNEL_STOP_ABORT_TIMEOUT_MS = 5_000;
 const CHANNEL_STARTUP_CONCURRENCY = 4;
 
+function waitForChannelStartupHandoff(): Promise<void> {
+  return new Promise((resolve) => {
+    const handle = setImmediate(resolve);
+    handle.unref?.();
+  });
+}
+
 type ChannelRuntimeStore = {
   aborts: Map<string, AbortController>;
   starting: Map<string, Promise<void>>;
@@ -512,9 +519,16 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             lastError: null,
             reconnectAttempts: preserveRestartAttempts ? (restartAttempts.get(rKey) ?? 0) : 0,
           });
-          const task = Promise.resolve().then(() =>
-            measureStartup(`channels.${channelId}.start-account`, () =>
-              startAccount({
+          const task = Promise.resolve().then(async () => {
+            if (startupTrace) {
+              await waitForChannelStartupHandoff();
+            }
+            if (abort.signal.aborted || manuallyStopped.has(rKey)) {
+              return;
+            }
+            let startAccountTask: ReturnType<typeof startAccount> | undefined;
+            await measureStartup(`channels.${channelId}.start-account-handoff`, () => {
+              startAccountTask = startAccount({
                 cfg,
                 accountId: id,
                 account,
@@ -524,9 +538,10 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                 getStatus: () => getRuntime(channelId, id),
                 setStatus: (next) => setRuntime(channelId, id, next),
                 ...(channelRuntimeForTask ? { channelRuntime: channelRuntimeForTask } : {}),
-              }),
-            ),
-          );
+              });
+            });
+            await startAccountTask;
+          });
           const trackedPromise = task
             .then(() => {
               if (abort.signal.aborted || manuallyStopped.has(rKey)) {
@@ -815,11 +830,11 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     return { channels, channelAccounts };
   };
 
-  const isManuallyStopped_ = (channelId: ChannelId, accountId: string): boolean => {
+  const isManuallyStoppedFlag = (channelId: ChannelId, accountId: string): boolean => {
     return manuallyStopped.has(restartKey(channelId, accountId));
   };
 
-  const resetRestartAttempts_ = (channelId: ChannelId, accountId: string): void => {
+  const resetRestartAttemptsForTest = (channelId: ChannelId, accountId: string): void => {
     restartAttempts.delete(restartKey(channelId, accountId));
   };
 
@@ -829,8 +844,8 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     startChannel,
     stopChannel,
     markChannelLoggedOut,
-    isManuallyStopped: isManuallyStopped_,
-    resetRestartAttempts: resetRestartAttempts_,
+    isManuallyStopped: isManuallyStoppedFlag,
+    resetRestartAttempts: resetRestartAttemptsForTest,
     isHealthMonitorEnabled,
   };
 }

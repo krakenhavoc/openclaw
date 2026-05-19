@@ -44,7 +44,19 @@ function createExistingSessionProfileState(params?: {
   };
 }
 
-function createManagedProfileState() {
+function readFirstReachabilityCall(
+  isReachable: ReturnType<typeof vi.fn>,
+): [number | undefined, { ephemeral?: boolean; signal?: AbortSignal } | undefined] {
+  const [call] = isReachable.mock.calls as Array<
+    [number | undefined, { ephemeral?: boolean; signal?: AbortSignal } | undefined]
+  >;
+  if (!call) {
+    throw new Error("expected reachability probe call");
+  }
+  return call;
+}
+
+function createManagedProfileState(profileOverrides?: Record<string, unknown>) {
   return {
     resolved: {
       enabled: true,
@@ -68,6 +80,7 @@ function createManagedProfileState() {
           headless: false,
           headlessSource: "default",
           attachOnly: false,
+          ...profileOverrides,
         },
         isHttpReachable: async () => false,
         isTransportAvailable: async () => false,
@@ -203,6 +216,19 @@ describe("basic browser routes", () => {
     expect(body.headlessSource).toBe("request");
   });
 
+  it("redacts CDP URL credentials from status responses", async () => {
+    const response = await callBasicRouteWithState({
+      query: { profile: "openclaw" },
+      state: createManagedProfileState({
+        cdpUrl: "http://openclaw:relay-token@127.0.0.1:18800",
+      }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = responseBodyRecord(response);
+    expect(body.cdpUrl).toBe("http://127.0.0.1:18800");
+  });
+
   it("maps existing-session status failures to JSON browser errors", async () => {
     const response = await callBasicRouteWithState({
       state: createExistingSessionProfileState({
@@ -329,10 +355,11 @@ describe("basic browser routes", () => {
     expect(response.statusCode).toBe(200);
     expect(isTransportAvailable).toHaveBeenCalledTimes(1);
     expect(isTransportAvailable).toHaveBeenCalledWith(5_000);
-    expect(isReachable).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.objectContaining({ ephemeral: true, signal: expect.any(AbortSignal) }),
-    );
+    const [timeoutMs, reachabilityOptions] = readFirstReachabilityCall(isReachable);
+    expect(timeoutMs).toBeGreaterThan(0);
+    expect(timeoutMs).toBeLessThanOrEqual(7_000);
+    expect(reachabilityOptions?.ephemeral).toBe(true);
+    expect(reachabilityOptions?.signal).toBeInstanceOf(AbortSignal);
     expect(isHttpReachable).not.toHaveBeenCalled();
     const body = responseBodyRecord(response);
     expect(body.cdpHttp).toBe(true);
@@ -357,10 +384,10 @@ describe("basic browser routes", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(isReachable).toHaveBeenCalledWith(
-        4_000,
-        expect.objectContaining({ ephemeral: true, signal: expect.any(AbortSignal) }),
-      );
+      const [timeoutMs, reachabilityOptions] = readFirstReachabilityCall(isReachable);
+      expect(timeoutMs).toBe(4_000);
+      expect(reachabilityOptions?.ephemeral).toBe(true);
+      expect(reachabilityOptions?.signal).toBeInstanceOf(AbortSignal);
     } finally {
       vi.useRealTimers();
     }
@@ -382,9 +409,9 @@ describe("basic browser routes", () => {
     });
 
     expect(isReachable).toHaveBeenCalledTimes(1);
-    expect(isReachable.mock.calls[0]?.[1]).toEqual(
-      expect.objectContaining({ ephemeral: true, signal: expect.any(AbortSignal) }),
-    );
+    const [, reachabilityOptions] = readFirstReachabilityCall(isReachable);
+    expect(reachabilityOptions?.ephemeral).toBe(true);
+    expect(reachabilityOptions?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("skips the page-reachability probe when transport is unavailable", async () => {

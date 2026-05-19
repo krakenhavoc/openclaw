@@ -72,11 +72,13 @@ const mocks = vi.hoisted(() => {
   });
   return {
     loadConfigMock: vi.fn(() => ({})),
-    resolveDefaultAgentIdMock: vi.fn((_config: unknown) => "main"),
+    resolveDefaultAgentIdMock: vi.fn((configForTest: unknown) => "main"),
     resolveAgentIdByWorkspacePathMock: vi.fn(
-      (_config: unknown, _workspacePath: string): string | undefined => undefined,
+      (configForTest: unknown, _workspacePath: string): string | undefined => undefined,
     ),
-    resolveAgentWorkspaceDirMock: vi.fn((_config: unknown, _agentId: string) => "/tmp/workspace"),
+    resolveAgentWorkspaceDirMock: vi.fn(
+      (configForTest: unknown, _agentId: string) => "/tmp/workspace",
+    ),
     searchSkillsFromClawHubMock: vi.fn(),
     installSkillFromClawHubMock: vi.fn(),
     updateSkillsFromClawHubMock: vi.fn(),
@@ -110,20 +112,24 @@ const {
 function mockCall(mock: unknown, index = 0): Array<unknown> {
   const calls = (mock as { mock?: { calls?: Array<Array<unknown>> } }).mock?.calls ?? [];
   const call = calls.at(index);
-  expect(call, `mock call ${index + 1}`).toBeDefined();
-  return call as Array<unknown>;
+  if (!call) {
+    throw new Error(`Expected mock call ${index + 1}`);
+  }
+  return call;
 }
 
 function mockFirstObjectArg(mock: unknown): Record<string, unknown> {
   const [arg] = mockCall(mock);
-  expect(arg).toBeTypeOf("object");
-  expect(arg).not.toBeNull();
+  if (!arg || typeof arg !== "object") {
+    throw new Error("expected first mock argument object");
+  }
   return arg as Record<string, unknown>;
 }
 
 function expectObjectFields(value: unknown, expected: Record<string, unknown>): void {
-  expect(value).toBeTypeOf("object");
-  expect(value).not.toBeNull();
+  if (!value || typeof value !== "object") {
+    throw new Error("expected object fields");
+  }
   const record = value as Record<string, unknown>;
   for (const [key, expectedValue] of Object.entries(expected)) {
     expect(record[key], key).toEqual(expectedValue);
@@ -131,8 +137,9 @@ function expectObjectFields(value: unknown, expected: Record<string, unknown>): 
 }
 
 function expectLogger(value: unknown): void {
-  expect(value).toBeTypeOf("object");
-  expect(value).not.toBeNull();
+  if (!value || typeof value !== "object") {
+    throw new Error("expected logger object");
+  }
 }
 
 function expectStatusWorkspaceCall(workspaceDir: string): void {
@@ -234,7 +241,7 @@ describe("skills cli commands", () => {
 
   function routeWorkspaceByAgent() {
     resolveAgentWorkspaceDirMock.mockImplementation(
-      (_config: unknown, agentId: string) => `/tmp/workspace-${agentId}`,
+      (configForTest: unknown, agentId: string) => `/tmp/workspace-${agentId}`,
     );
   }
 
@@ -463,12 +470,11 @@ describe("skills cli commands", () => {
     await runCommand(argv);
 
     expectStatusWorkspaceCall("/tmp/workspace");
-    expect(
-      defaultRuntime.writeStdout.mock.calls.length + defaultRuntime.writeJson.mock.calls.length,
-    ).toBeGreaterThan(0);
+    expect(defaultRuntime.writeStdout).toHaveBeenCalledTimes(1);
+    expect(defaultRuntime.writeJson).not.toHaveBeenCalled();
     expect(defaultRuntime.log).not.toHaveBeenCalled();
     expect(runtimeErrors).toStrictEqual([]);
-    expect(runtimeStdout.length).toBeGreaterThan(0);
+    expect(runtimeStdout).toHaveLength(1);
 
     const payload = JSON.parse(runtimeStdout.at(-1) ?? "{}") as Record<string, unknown>;
     assert(payload);

@@ -2,7 +2,11 @@ import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../agents/model-ref-shared.js";
 import { normalizeProviderId } from "../agents/provider-id.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
-import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
+import {
+  DEFAULT_AGENT_MAX_CONCURRENT,
+  DEFAULT_SUBAGENT_ARCHIVE_AFTER_MINUTES,
+  DEFAULT_SUBAGENT_MAX_CONCURRENT,
+} from "./agent-limits.js";
 import { normalizeAgentModelMapForConfig, normalizeAgentModelRefForConfig } from "./model-input.js";
 import {
   applyProviderConfigDefaultsForConfig,
@@ -88,6 +92,10 @@ export function inferModelInput(modelId: string): ModelDefinitionConfig["input"]
 
 type ModelDefinitionLike = Partial<ModelDefinitionConfig> &
   Pick<ModelDefinitionConfig, "id" | "name">;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
 
 function isPositiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -298,9 +306,43 @@ export function applyModelDefaults(
     }
   }
 
-  const existingAgent = nextCfg.agents?.defaults;
+  let nextAgents = nextCfg.agents;
+  const rawAgentList = nextAgents?.list;
+  if (Array.isArray(rawAgentList)) {
+    let listMutated = false;
+    const agentList = rawAgentList.map((agent) => {
+      if (!isRecord(agent)) {
+        return agent;
+      }
+      let nextAgent = agent;
+      if (Object.prototype.hasOwnProperty.call(agent, "model")) {
+        const normalizedModel = normalizeAgentModelConfigForDefaults(agent.model);
+        if (normalizedModel !== agent.model) {
+          nextAgent = { ...nextAgent, model: normalizedModel as typeof agent.model };
+          listMutated = true;
+        }
+      }
+      if (isRecord(agent.models)) {
+        const normalizedModels = normalizeAgentModelMapForConfig(agent.models);
+        if (normalizedModels !== agent.models) {
+          nextAgent = { ...nextAgent, models: normalizedModels };
+          listMutated = true;
+        }
+      }
+      return nextAgent;
+    });
+    if (listMutated) {
+      nextAgents = { ...nextAgents, list: agentList };
+      mutated = true;
+    }
+  }
+
+  const existingAgent = nextAgents?.defaults;
   if (!existingAgent) {
-    return mutated ? nextCfg : cfg;
+    if (!mutated) {
+      return cfg;
+    }
+    return nextAgents === nextCfg.agents ? nextCfg : { ...nextCfg, agents: nextAgents };
   }
 
   let nextAgent = existingAgent;
@@ -320,7 +362,7 @@ export function applyModelDefaults(
       ? {
           ...nextCfg,
           agents: {
-            ...nextCfg.agents,
+            ...nextAgents,
             defaults: nextAgent,
           },
         }
@@ -350,7 +392,7 @@ export function applyModelDefaults(
   return {
     ...nextCfg,
     agents: {
-      ...nextCfg.agents,
+      ...nextAgents,
       defaults: { ...nextAgent, models: nextModels },
     },
   };
@@ -396,7 +438,10 @@ export function applyAgentDefaults(cfg: OpenClawConfig): OpenClawConfig {
   const hasSubMax =
     typeof defaults?.subagents?.maxConcurrent === "number" &&
     Number.isFinite(defaults.subagents.maxConcurrent);
-  if (hasMax && hasSubMax) {
+  const hasSubArchive =
+    typeof defaults?.subagents?.archiveAfterMinutes === "number" &&
+    Number.isFinite(defaults.subagents.archiveAfterMinutes);
+  if (hasMax && hasSubMax && hasSubArchive) {
     return cfg;
   }
 
@@ -410,6 +455,10 @@ export function applyAgentDefaults(cfg: OpenClawConfig): OpenClawConfig {
   const nextSubagents = defaults?.subagents ? { ...defaults.subagents } : {};
   if (!hasSubMax) {
     nextSubagents.maxConcurrent = DEFAULT_SUBAGENT_MAX_CONCURRENT;
+    mutated = true;
+  }
+  if (!hasSubArchive) {
+    nextSubagents.archiveAfterMinutes = DEFAULT_SUBAGENT_ARCHIVE_AFTER_MINUTES;
     mutated = true;
   }
 

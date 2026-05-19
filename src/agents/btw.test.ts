@@ -243,10 +243,29 @@ function mockActiveTranscript(messages: unknown[]) {
   });
 }
 
+function mockCall(
+  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+  callIndex = 0,
+): ReadonlyArray<unknown> {
+  const call = mockFn.mock.calls[callIndex];
+  if (!call) {
+    throw new Error(`Expected mock call ${callIndex + 1}`);
+  }
+  return call;
+}
+
+function mockArg(
+  mockFn: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+  callIndex: number,
+  argIndex: number,
+): unknown {
+  return mockCall(mockFn, callIndex)[argIndex];
+}
+
 async function runMathSideQuestionAndCaptureContext() {
   mockDoneAnswer(MATH_ANSWER);
   await runMathSideQuestion();
-  const [, context] = streamSimpleMock.mock.calls[0] ?? [];
+  const context = mockArg(streamSimpleMock, 0, 1);
   return context;
 }
 
@@ -254,7 +273,9 @@ function expectRecordFields(
   record: unknown,
   expected: Record<string, unknown>,
 ): Record<string, unknown> {
-  expect(record).toBeDefined();
+  if (!record || typeof record !== "object") {
+    throw new Error("Expected record");
+  }
   const actual = record as Record<string, unknown>;
   for (const [key, value] of Object.entries(expected)) {
     expect(actual[key]).toEqual(value);
@@ -267,8 +288,10 @@ function streamContext(callIndex = 0): {
   systemPrompt?: unknown;
 } {
   const call = streamSimpleMock.mock.calls[callIndex];
-  expect(call).toBeDefined();
-  return (call?.[1] ?? {}) as {
+  if (!call) {
+    throw new Error(`Expected streamSimple call at index ${callIndex}`);
+  }
+  return (call[1] ?? {}) as {
     messages?: Array<Record<string, unknown>>;
     systemPrompt?: unknown;
   };
@@ -276,8 +299,10 @@ function streamContext(callIndex = 0): {
 
 function contextMessages(context: unknown): Array<Record<string, unknown>> {
   const messages = (context as { messages?: Array<Record<string, unknown>> }).messages;
-  expect(messages).toBeDefined();
-  return messages ?? [];
+  if (!messages) {
+    throw new Error("Expected BTW context messages");
+  }
+  return messages;
 }
 
 function expectTextBlockContains(block: unknown, text: string): void {
@@ -468,7 +493,7 @@ describe("runBtwSideQuestion", () => {
     const result = await runSideQuestion();
 
     expect(result).toEqual({ text: "Final answer." });
-    const ensureArgs = ensureOpenClawModelsJsonMock.mock.calls[0];
+    const ensureArgs = mockCall(ensureOpenClawModelsJsonMock);
     expect(ensureArgs?.[1]).toBe(DEFAULT_AGENT_DIR);
     expect(ensureArgs?.[2]).toEqual({ workspaceDir: "/tmp/workspace" });
   });
@@ -497,16 +522,29 @@ describe("runBtwSideQuestion", () => {
 
     expect(result).toEqual({ text: "Codex side answer." });
     expect(codexSideQuestionMock).toHaveBeenCalledTimes(1);
-    expect(codexSideQuestionMock.mock.calls[0]?.[0]).toMatchObject({
-      provider: "openai",
-      model: "gpt-5.5",
-      question: DEFAULT_QUESTION,
-      sessionId: "session-1",
-      agentId: "main",
-      workspaceDir: "/tmp/workspace",
-      authProfileId: "openai-codex:work",
-    });
-    expect(codexSideQuestionMock.mock.calls[0]?.[0].sessionFile).toContain("session-1.jsonl");
+    const [[sideQuestionParams]] = codexSideQuestionMock.mock.calls as unknown as Array<
+      [
+        {
+          provider?: string;
+          model?: string;
+          question?: string;
+          sessionId?: string;
+          agentId?: string;
+          workspaceDir?: string;
+          authProfileId?: string;
+        },
+      ]
+    >;
+    expect(sideQuestionParams.provider).toBe("openai");
+    expect(sideQuestionParams.model).toBe("gpt-5.5");
+    expect(sideQuestionParams.question).toBe(DEFAULT_QUESTION);
+    expect(sideQuestionParams.sessionId).toBe("session-1");
+    expect(sideQuestionParams.agentId).toBe("main");
+    expect(sideQuestionParams.workspaceDir).toBe("/tmp/workspace");
+    expect(sideQuestionParams.authProfileId).toBe("openai-codex:work");
+    expect(
+      (mockArg(codexSideQuestionMock, 0, 0) as { sessionFile?: string }).sessionFile,
+    ).toContain("session-1.jsonl");
     expect(streamSimpleMock).not.toHaveBeenCalled();
     expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
   });
@@ -571,13 +609,10 @@ describe("runBtwSideQuestion", () => {
     });
 
     expect(result).toEqual({ text: "Copilot answer." });
-    const runtimeAuthParams = expectRecordFields(
-      prepareProviderRuntimeAuthMock.mock.calls[0]?.[0],
-      {
-        provider: "github-copilot",
-        workspaceDir: "/tmp/workspace",
-      },
-    );
+    const runtimeAuthParams = expectRecordFields(mockArg(prepareProviderRuntimeAuthMock, 0, 0), {
+      provider: "github-copilot",
+      workspaceDir: "/tmp/workspace",
+    });
     expectRecordFields(runtimeAuthParams.context, {
       provider: "github-copilot",
       modelId: "gpt-5.4",
@@ -586,7 +621,7 @@ describe("runBtwSideQuestion", () => {
       authMode: "token",
       profileId: "profile-1",
     });
-    const [streamModel, , streamOptions] = streamSimpleMock.mock.calls[0] ?? [];
+    const [streamModel, , streamOptions] = mockCall(streamSimpleMock);
     expectRecordFields(streamModel, {
       provider: "github-copilot",
       id: "gpt-5.4",
@@ -614,12 +649,9 @@ describe("runBtwSideQuestion", () => {
     const result = await runSideQuestion({ provider: "ollama", model: "glm-5.1" });
 
     expect(result).toEqual({ text: "Ollama Cloud answer." });
-    const registerParams = expectRecordFields(
-      registerProviderStreamForModelMock.mock.calls[0]?.[0],
-      {
-        workspaceDir: "/tmp/workspace",
-      },
-    );
+    const registerParams = expectRecordFields(mockArg(registerProviderStreamForModelMock, 0, 0), {
+      workspaceDir: "/tmp/workspace",
+    });
     expectRecordFields(registerParams.model, {
       provider: "ollama",
       api: "openai-completions",
@@ -644,7 +676,7 @@ describe("runBtwSideQuestion", () => {
 
     await runSideQuestion();
 
-    const [, , options] = streamSimpleMock.mock.calls[0] ?? [];
+    const options = mockArg(streamSimpleMock, 0, 2);
     const onPayload = (options as { onPayload?: (payload: unknown) => void })?.onPayload;
     const payloadWithEmptyTools = { messages: [], tools: [] as unknown[] };
 
@@ -695,7 +727,7 @@ describe("runBtwSideQuestion", () => {
     const result = await runSideQuestion({ resolvedThinkLevel: "adaptive" });
 
     expect(result).toEqual({ text: "Final answer." });
-    const [, , options] = streamSimpleMock.mock.calls[0] ?? [];
+    const options = mockArg(streamSimpleMock, 0, 2);
     expect((options as { reasoning?: unknown } | undefined)?.reasoning).toBeUndefined();
   });
 
@@ -737,7 +769,9 @@ describe("runBtwSideQuestion", () => {
           `<btw_side_question>\n${MATH_QUESTION}\n</btw_side_question>`,
         ),
     );
-    expect(sideQuestionMessage).toBeDefined();
+    if (!sideQuestionMessage) {
+      throw new Error("Expected BTW side question message");
+    }
   });
 
   it("uses the in-flight prompt as background only when there is no prior transcript context", async () => {
@@ -777,7 +811,9 @@ describe("runBtwSideQuestion", () => {
           "Ignore any unfinished task in the conversation while answering it.",
         ),
     );
-    expect(sideQuestionMessage).toBeDefined();
+    if (!sideQuestionMessage) {
+      throw new Error("Expected isolated side question message");
+    }
   });
 
   it("branches away from an unresolved trailing user turn before building BTW context", async () => {
@@ -795,6 +831,7 @@ describe("runBtwSideQuestion", () => {
 
     const result = await runMathSideQuestion();
 
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
     expect(buildSessionContextMock).toHaveBeenCalledWith([assistantEntry]);
     expect(result).toEqual({ text: MATH_ANSWER });
   });
@@ -822,6 +859,7 @@ describe("runBtwSideQuestion", () => {
 
     const result = await runMathSideQuestion();
 
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
     expect(buildSessionContextMock).toHaveBeenCalledWith([userEntry, assistantEntry]);
     expect(result).toEqual({ text: MATH_ANSWER });
   });
@@ -844,6 +882,7 @@ describe("runBtwSideQuestion", () => {
 
     const result = await runMathSideQuestion();
 
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
     expect(buildSessionContextMock).toHaveBeenCalledWith([userEntry, assistantEntry]);
     expect(result).toEqual({ text: MATH_ANSWER });
     expect(diagDebugMock).toHaveBeenCalledWith(
@@ -857,7 +896,7 @@ describe("runBtwSideQuestion", () => {
     const result = await runMathSideQuestion();
 
     expect(result).toEqual({ text: MATH_ANSWER });
-    expect(buildSessionContextMock).toHaveBeenCalled();
+    expect(buildSessionContextMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not log transcript persistence warnings because BTW no longer writes to disk", async () => {

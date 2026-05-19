@@ -57,10 +57,20 @@ function createSpawnedProcess() {
 }
 
 async function waitForSpawnCount(count: number) {
-  while (spawnMock.mock.calls.length < count) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await vi.waitFor(() => {
+    expect(spawnMock).toHaveBeenCalledTimes(count);
+  });
+  await Promise.resolve();
+}
+
+function firstSpawnCall(): unknown[] | undefined {
+  return spawnMock.mock.calls[0];
+}
+
+function firstGatewayCall(
+  gatewayCall: ReturnType<typeof vi.fn>,
+): [string, unknown, unknown] | undefined {
+  return gatewayCall.mock.calls[0] as [string, unknown, unknown] | undefined;
 }
 
 describe("qa suite runtime agent process helpers", () => {
@@ -94,7 +104,7 @@ describe("qa suite runtime agent process helpers", () => {
     child.emit("exit", 0);
 
     await expect(pending).resolves.toBe("ok");
-    const spawnCall = spawnMock.mock.calls[0];
+    const spawnCall = firstSpawnCall();
     expect(spawnCall?.[0]).toBe("/usr/bin/node");
     expect(spawnCall?.[1]).toEqual([path.join("/repo", "dist", "index.js"), "qa", "suite"]);
     expect((spawnCall?.[2] as { cwd?: string; env?: unknown } | undefined)?.cwd).toBe(
@@ -132,7 +142,7 @@ describe("qa suite runtime agent process helpers", () => {
     child.emit("exit", 0);
 
     await expect(pending).resolves.toBe("ok");
-    const spawnCall = spawnMock.mock.calls[0];
+    const spawnCall = firstSpawnCall();
     expect(spawnCall?.[0]).toBe("/usr/bin/node");
     expect(spawnCall?.[1]).toEqual([
       path.join("/repo", "dist", "index.js"),
@@ -253,9 +263,7 @@ describe("qa suite runtime agent process helpers", () => {
         message: "hello",
       }),
     ).resolves.toEqual({ runId: "run-1" });
-    const gatewayArgs = gatewayCall.mock.calls[0] as unknown as
-      | [string, unknown, unknown]
-      | undefined;
+    const gatewayArgs = firstGatewayCall(gatewayCall);
     expect(gatewayArgs?.[0]).toBe("agent");
     const agentPayload = gatewayArgs?.[1] as
       | {
@@ -271,7 +279,7 @@ describe("qa suite runtime agent process helpers", () => {
     expect(agentPayload?.channel).toBe("qa-channel");
     expect(agentPayload?.replyChannel).toBe("reply-channel");
     expect(agentPayload?.replyTo).toBe("reply-target");
-    expect(gatewayArgs?.[2]).toEqual(expect.any(Object));
+    expect(gatewayArgs?.[2]).toBeTypeOf("object");
   });
 
   it("finds managed dreaming cron jobs across legacy and current payload contracts", () => {
